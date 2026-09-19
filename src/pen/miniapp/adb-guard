@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+data=$1
+pid="$data/adb-guard.pid"
+alive() {
+    process=$(cat "$pid" 2>/dev/null) || return 1
+    case "$process" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$process" -gt 1 ] && kill -0 "$process" 2>/dev/null
+}
+listen() {
+    awk 'NR > 1 && $2 ~ /:15B3$/ && $4 == "0A" { found = 1 } END { exit !found }' /proc/net/tcp
+}
+alive && exit
+mkdir -p "$data"
+printf '%s\n' "$$" > "$pid"
+trap 'rm -f "$pid"; exit' EXIT INT TERM
+while :; do
+    listen || ADB_TCP_PORT=5555 /usr/bin/adbd > /dev/null 2>&1 || :
+    sleep 1
+done

@@ -1,0 +1,162 @@
+#!/bin/sh
+set -eu
+umask 077
+bin=$(CDPATH= cd "$(dirname "$0")" && pwd)
+slot=$(dirname "$bin")
+package=$(dirname "$slot")
+data="$package/data"
+config="$data/config"
+if [ "${1:-}" = input ]; then
+    chmod 755 "$bin/daemon"
+    exec "$bin/daemon" --input "$data/input.sock" "$2"
+fi
+if [ "${1:-}" = files ]; then
+    action=${2:-}
+    case "$action" in
+        reset|transfer/push|transfer/pull) ;;
+        open/pen/*|open/windows/*|select/pen/*|select/windows/*)
+            case "${action##*/}" in ''|*[!0-9]*) exit 2 ;; esac
+            ;;
+        *) exit 2 ;;
+    esac
+    if [ "$action" = reset ]; then
+        /bin/setsid curl -fsS "http://127.0.0.1:7194/files/$action" < /dev/null > /dev/null 2>&1 &
+        exit
+    fi
+    exec curl -fsS "http://127.0.0.1:7194/files/$action"
+fi
+alive() {
+    pid=$(cat "$1" 2>/dev/null) || return 1
+    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$pid" -gt 1 ] && [ -r "/proc/$pid/stat" ] || return 1
+    case "$1" in
+        "$data/daemon.pid") expected=daemon ;;
+        "$data/tailscaled.pid") expected=tailscaled ;;
+        *) return 1 ;;
+    esac
+    case "$(readlink "/proc/$pid/exe")" in
+        "$package/a/bin/$expected"|"$package/b/bin/$expected"|\
+        "$package/a/bin/$expected (deleted)"|"$package/b/bin/$expected (deleted)") ;;
+        *) return 1 ;;
+    esac
+    [ "$(cut -d ' ' -f 3 "/proc/$pid/stat")" != Z ]
+}
+ready() {
+    [ -S "$data/tailscaled.sock" ] && HOME="$data" /bin/timeout 2 "$bin/tailscale" --socket="$data/tailscaled.sock" status --json > /dev/null 2>&1
+}
+stop() {
+    if alive "$1"; then
+        kill "$(cat "$1")" 2>/dev/null || :
+        count=0
+        while alive "$1" && [ "$count" -lt 30 ]; do
+            sleep 0.1
+            count=$((count + 1))
+        done
+        if alive "$1"; then
+            kill -9 "$(cat "$1")" 2>/dev/null || :
+            count=0
+            while alive "$1" && [ "$count" -lt 10 ]; do
+                sleep 0.1
+                count=$((count + 1))
+            done
+            alive "$1" && return 1
+        fi
+    fi
+    rm -f "$1"
+}
+network() {
+    if alive "$data/tailscaled.pid" && ! ready; then
+        stop "$data/daemon.pid"
+        stop "$data/tailscaled.pid"
+    fi
+    if ! alive "$data/tailscaled.pid"; then
+        rm -f "$data/tailscaled.pid" "$data/tailscaled.sock"
+        socks=127.0.0.1:1055
+        if [ -s "$config" ]; then
+            socks=$(sed -n 's/^socks=//p' "$config")
+        fi
+        HOME="$data" XDG_CACHE_HOME="$data" /bin/setsid "$bin/tailscaled" --no-logs-no-support --tun=userspace-networking --state="$data/tailscaled.state" --socket="$data/tailscaled.sock" --socks5-server="$socks" < /dev/null > /dev/null 2>&1 &
+        echo $! > "$data/tailscaled.pid"
+    fi
+    count=0
+    while ! ready && [ "$count" -lt 50 ]; do
+        sleep 0.1
+        count=$((count + 1))
+    done
+    ready || return 1
+}
+initialize() {
+    old=
+    if [ -r "$data/slot" ]; then
+        old=$(cat "$data/slot")
+    fi
+    if [ "$old" != "$slot" ]; then
+        stop "$data/daemon.pid"
+        stop "$data/tailscaled.pid"
+        rm -f "$data/tailscaled.sock"
+    fi
+    if [ ! -f "$config" ]; then
+        for candidate in "$slot/config" "$old/config"; do
+            case "$candidate" in "$package"/*/config) ;; *) continue ;; esac
+            if [ -s "$candidate" ]; then
+                cp "$candidate" "$config"
+                chmod 600 "$config"
+                break
+            fi
+        done
+    fi
+    printf '%s\n' "$slot" > "$data/slot"
+    chmod 755 "$bin/daemon" "$bin/tailscale" "$bin/tailscaled"
+    chmod 755 "$bin/adb-guard"
+    /bin/setsid "$bin/adb-guard" "$data" < /dev/null > /dev/null 2>&1 &
+}
+serve_adb() {
+    HOME="$data" "$bin/tailscale" --socket="$data/tailscaled.sock" serve --bg --tcp=5555 tcp://127.0.0.1:5555 > /dev/null 2>&1 || :
+}
+run() {
+    network || :
+    serve_adb
+    [ -s "$config" ] || return 0
+    "$bin/daemon" --check-config "$config"
+    if ! alive "$data/daemon.pid"; then
+        rm -f "$data/daemon.pid"
+        /bin/setsid "$bin/daemon" --config "$config" < /dev/null > /dev/null 2>&1 &
+        echo $! > "$data/daemon.pid"
+    fi
+}
+if [ "${1:-}" = stop ]; then
+    stop "$data/daemon.pid"
+    exit
+fi
+mkdir -p "$data"
+chmod 700 "$data"
+initialize
+case "${1:-}" in
+    network) network ;;
+    status)
+        network
+        HOME="$data" exec "$bin/tailscale" --socket="$data/tailscaled.sock" status --json
+        ;;
+    login)
+        network
+        if [ -s "$data/auth" ]; then
+            result=0
+            HOME="$data" /bin/timeout 20 "$bin/tailscale" --socket="$data/tailscaled.sock" up --timeout=15s --auth-key="file:$data/auth" > /dev/null 2>&1 || result=$?
+            rm -f "$data/auth"
+            [ "$result" -eq 0 ] || exit "$result"
+        else
+            HOME="$data" /bin/timeout 8 "$bin/tailscale" --socket="$data/tailscaled.sock" up --timeout=3s > /dev/null 2>&1 || :
+        fi
+        run
+        ;;
+    configure)
+        chmod 600 "$data/config.new"
+        "$bin/daemon" --check-config "$data/config.new"
+        stop "$data/daemon.pid"
+        stop "$data/tailscaled.pid"
+        mv "$data/config.new" "$config"
+        run
+        ;;
+    "") run > /dev/null 2>&1 ;;
+    *) exit 2 ;;
+esac

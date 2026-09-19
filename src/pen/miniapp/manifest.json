@@ -1,0 +1,29 @@
+{
+  "appName": "PenDesk",
+  "version": "0.6.0",
+  "appid": "9000000000000002",
+  "icon": "app_icon.png",
+  "quickjs": {
+    "version": "20200705",
+    "bigNum": false
+  },
+  "props": {
+    "supportUnInstall": true,
+    "page_rotation": {
+      "index": "inherit"
+    },
+    "addDesktop": {
+      "popcorn_platform": true,
+      "y02_1_platform": true,
+      "coco_platform": true,
+      "almond_platform": true,
+      "x3s_platform": true,
+      "apollo_platform": true,
+      "plum_platform": true,
+      "melon_platform": true,
+      "exam_platform": true,
+      "hermes_platform": true,
+      "hermes_plus_platform": true
+    }
+  }
+}
