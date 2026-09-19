@@ -28,7 +28,7 @@ int audio_start(struct audio *audio, uint32_t rate, uint8_t channels) {
         return -1;
     snprintf(rate_text, sizeof(rate_text), "%u", rate);
     snprintf(channels_text, sizeof(channels_text), "%u", channels);
-    char *arguments[] = {"aplay", "-D", "hw:0,0", "-f", "S16_LE", "-r", rate_text, "-c",
+    char *arguments[] = {"aplay", "-D", "default", "-f", "S16_LE", "-r", rate_text, "-c",
                          channels_text, "-q", "-", NULL};
     if (pipe(input) != 0) return -1;
     fcntl(input[0], F_SETFD, FD_CLOEXEC);

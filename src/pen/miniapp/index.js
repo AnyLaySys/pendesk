@@ -380,12 +380,12 @@ const script = {
         const label = entry.label;
         if (!label) return;
         if (modifierCodes[label]) {
-          this.modifiers[label] = true;
-          control([0x23, 0, modifierCodes[label], 1]);
+          this.modifiers[label] = !this.modifiers[label];
+          control([0x23, 0, modifierCodes[label], this.modifiers[label] ? 1 : 0]);
           return;
         }
         if (label === "Caps") {
-          this.caps = true;
+          this.caps = !this.caps;
           return;
         }
         this.tap(label);
@@ -405,13 +405,7 @@ const script = {
         const held = this.held[index];
         this.held.splice(index, 1);
         if (held.timer !== null) clearTimeout(held.timer);
-        const label = held.entry.label;
         if (held.entry.close) return this.showTools();
-        if (modifierCodes[label] && !this.held.some(value => value.entry.label === label)) {
-          this.modifiers[label] = false;
-          control([0x23, 0, modifierCodes[label], 0]);
-        }
-        if (label === "Caps" && !this.held.some(value => value.entry.label === "Caps")) this.caps = false;
       });
     }
   }
@@ -424,10 +418,10 @@ const style = {
     desktop: { width: "100%", height: "100%", position: "absolute", top: 0, left: 0 },
     toolToggle: { position: "absolute", bottom: 8, right: 8, width: 27, height: 27, borderRadius: 14, backgroundColor: "#0078d4" },
     tools: { width: "100%", height: "100%", position: "relative" },
-    toolItem: { position: "absolute", top: 9, width: 168, height: 44, flexDirection: "row", alignItems: "center", backgroundColor: "#191B21", borderRadius: 3 },
+    toolItem: { position: "absolute", top: 9, width: 162, height: 27, flexDirection: "row", alignItems: "center", backgroundColor: "#191B21", borderRadius: 3 },
     toolKeyboard: { left: 72 },
-    toolFiles: { left: 252 },
-    toolText: { color: "#d9e1e8", fontSize: 22 },
+    toolFiles: { left: 246 },
+    toolText: { color: "#d9e1e8", fontSize: 18, lineHeight: "27px" },
     toolBack: { position: "absolute", top: 9, left: 9, width: 27, height: 27, alignItems: "center", justifyContent: "center" },
     toolBackIcon: { width: 27, height: 27 },
     toolItemIcon: { width: 27, height: 27, marginLeft: 8, marginRight: 12 },
@@ -482,7 +476,7 @@ const render = function () {
   const keyButton = entry => {
     var value = entry.label || "";
     var shown = this.modifiers.Shift && shifted[value] ? shifted[value] : arrows[value] || value;
-    var selected = value === "Caps" ? this.caps : !!this.modifiers[value];
+    var selected = modifierCodes[value] ? this.modifiers[value] : value === "Caps" ? this.caps : this.held.some(item => item.entry === entry);
     return create("div", {
       staticClass: ["button"],
       style: { left: entry.column / keyboardWidth * 100 + "%", width: entry.span / keyboardWidth * 100 + "%" },

@@ -88,7 +88,7 @@ impl Viewport {
             pointer_x: f64::from(bounds.width) / 2.0,
             pointer_y: f64::from(bounds.height) / 2.0,
             video,
-            zoom: scale.recip().clamp(1.0, 8.0),
+            zoom: scale.recip().clamp(1.0, 9.0),
         };
         viewport.sync_pointer();
         viewport.center_x = viewport.pointer_x;
@@ -105,7 +105,7 @@ impl Viewport {
         let (left, top, width, height) = self.capture();
         let anchor_x = (self.pointer_x - f64::from(left - self.bounds.left)) / f64::from(width);
         let anchor_y = (self.pointer_y - f64::from(top - self.bounds.top)) / f64::from(height);
-        self.zoom = (self.zoom * (f64::from(delta) / 160.0).exp()).clamp(1.0, 8.0);
+        self.zoom = (self.zoom * (f64::from(delta) / 160.0).exp()).clamp(1.0, 9.0);
         let (_, _, width, height) = self.capture();
         self.center_x = self.pointer_x + (0.5 - anchor_x) * f64::from(width);
         self.center_y = self.pointer_y + (0.5 - anchor_y) * f64::from(height);

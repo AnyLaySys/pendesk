@@ -146,6 +146,20 @@ fn session(
                 }
                 Ok(Input::Zoom(delta)) => input_viewport.lock().unwrap().zoom(delta),
                 Ok(Input::Video(enabled)) => {
+                    if !enabled {
+                        for (key, pressed) in pressed_keys.iter_mut().enumerate() {
+                            if *pressed {
+                                let _ = input::key(key as u16, false);
+                                *pressed = false;
+                            }
+                        }
+                        for (button, pressed) in pressed_buttons.iter_mut().enumerate().skip(1) {
+                            if *pressed {
+                                let _ = input::button(button as u8, false);
+                                *pressed = false;
+                            }
+                        }
+                    }
                     input_video.store(enabled, Ordering::Relaxed);
                     capture_thread.unpark();
                 }
