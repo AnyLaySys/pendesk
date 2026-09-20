@@ -50,6 +50,7 @@ struct video {
     bool assembling;
     bool has_sequence;
     bool connected;
+    bool fresh;
 };
 struct view {
     uint16_t height;

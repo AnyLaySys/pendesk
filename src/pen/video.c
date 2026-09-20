@@ -58,13 +58,13 @@ start_frame(struct video *video, uint32_t sequence, uint32_t length, uint16_t fr
     video->fragments_received = 0;
     video->assembling = true;
     video->has_sequence = true;
+    video->fresh = false;
     return 0;
 }
 
 static int
 receive_packet(struct video *video, const struct cfg *cfg, const struct input_state *input,
-               struct preview *preview, struct audio *audio, const uint8_t *packet, size_t length,
-               bool configured) {
+               struct audio *audio, const uint8_t *packet, size_t length, bool configured) {
     struct in_addr host;
     const uint8_t *payload;
     uint32_t sequence;
@@ -112,20 +112,28 @@ receive_packet(struct video *video, const struct cfg *cfg, const struct input_st
     }
     if (video->fragments_received != video->fragment_count) return 0;
     video->assembling = false;
-    if (!configured || input_paused(input)) return 0;
-    return preview_publish(preview, video->frame, video->length);
+    video->fresh = true;
+    return 0;
 }
 
 static int
 receive_packets(struct video *video, const struct cfg *cfg, const struct input_state *input,
                 struct preview *preview, struct audio *audio, bool configured) {
     uint8_t packet[10 + VIDEO_PACKET];
-    for (unsigned int index = 0; index != 64; ++index) {
+    for (;;) {
         ssize_t length = recv(video->fd, packet, sizeof(packet), 0);
-        if (length < 0) return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR ? 0 : -1;
-        if (receive_packet(video, cfg, input, preview, audio, packet, (size_t) length, configured) !=
-            0)
+        if (length < 0) {
+            if (errno == EINTR) continue;
+            if (errno != EAGAIN && errno != EWOULDBLOCK) return -1;
+            break;
+        }
+        if (receive_packet(video, cfg, input, audio, packet, (size_t) length, configured) != 0)
             return -1;
+    }
+    if (video->fresh) {
+        video->fresh = false;
+        if (configured && !input_paused(input)) return preview_publish(preview, video->frame,
+                                                                       video->length);
     }
     return 0;
 }

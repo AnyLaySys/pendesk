@@ -78,7 +78,7 @@ const script = {
       state(false, false);
     } catch {}
     return {
-      active: true, ready: false, frame: 0, job: null, view: "desktop", pad: null, held: [], fileTouch: null, fileScrolled: false,
+      active: true, ready: false, frame: Date.now(), job: null, view: "desktop", pad: null, held: [], fileTouch: null, fileScrolled: false,
       fileState: { pen: [], windows: [], transfer: 0, progress: 0 }, fileOffset: { pen: 0, windows: 0 }, fileWatch: null,
       caps: false, modifiers: { Shift: false, Ctrl: false, Win: false, Alt: false }
     };
