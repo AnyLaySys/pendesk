@@ -17,7 +17,7 @@
 
 static int listener(void) {
     struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons(
-            7194), .sin_addr = {.s_addr = htonl(INADDR_LOOPBACK)}};
+            999), .sin_addr = {.s_addr = htonl(INADDR_LOOPBACK)}};
     int enabled = 1;
     int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) return -1;
@@ -123,7 +123,7 @@ static void *serve(void *argument) {
             continue;
         if (kind == ACTION) {
             static const char response[] = "HTTP/1.0 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-            files_action(preview->files, action);
+            files_submit(preview->files, action);
             io_write_all(fd, response, sizeof(response) - 1);
             close(fd);
         } else if (pending >= 0) close(fd);
@@ -154,13 +154,6 @@ int preview_open(struct preview *preview, const struct cfg *cfg) {
     }
     preview->thread_started = true;
     return 0;
-}
-
-void preview_clear(struct preview *preview) {
-    pthread_mutex_lock(&preview->mutex);
-    preview->length = 0;
-    pthread_mutex_unlock(&preview->mutex);
-    notify(preview);
 }
 
 int preview_publish(struct preview *preview, const uint8_t *frame, size_t length) {

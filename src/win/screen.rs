@@ -1,14 +1,15 @@
 use crate::all::protocol::{Video, View};
 use crate::gpu::Gpu;
 use std::mem::size_of;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::{
     Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession,
 };
 use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
 use windows::Graphics::DirectX::DirectXPixelFormat;
-use windows::Win32::Foundation::{POINT, RECT};
+use windows::Win32::Foundation::{HANDLE, POINT, RECT};
+use windows::Win32::System::Threading::{CreateEventW, SetEvent, WaitForSingleObject};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_READ,
     D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_TEX2D_VPIV, D3D11_TEX2D_VPOV,
@@ -34,6 +35,26 @@ use windows::Win32::System::WinRT::Direct3D11::{
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
 use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 use windows::core::{Interface, factory};
+pub struct Signal(HANDLE);
+unsafe impl Send for Signal {}
+unsafe impl Sync for Signal {}
+impl Signal {
+    pub fn new() -> Result<Arc<Self>, String> {
+        let handle = unsafe { CreateEventW(None, false, false, None) }
+            .map_err(|error| error.to_string())?;
+        Ok(Arc::new(Self(handle)))
+    }
+    pub fn set(&self) {
+        unsafe {
+            let _ = SetEvent(self.0);
+        }
+    }
+    pub fn wait(&self, milliseconds: u32) {
+        unsafe {
+            let _ = WaitForSingleObject(self.0, milliseconds);
+        }
+    }
+}
 #[derive(Clone, Copy, PartialEq)]
 struct Bounds {
     left: i32,
@@ -65,6 +86,7 @@ pub struct Screen {
     width: u32,
     height: u32,
     have_frame: bool,
+    token: i64,
     video_context: ID3D11VideoContext,
     pub captured: u64,
     pub view: View,
@@ -204,12 +226,22 @@ impl Viewport {
     }
 }
 impl Screen {
-    pub fn new(gpu: &Gpu, video: Video, viewport: &mut Viewport) -> Result<Self, String> {
+    pub fn new(
+        gpu: &Gpu,
+        video: Video,
+        viewport: &mut Viewport,
+        signal: &Arc<Signal>,
+    ) -> Result<Self, String> {
         let bounds = Bounds::current()?;
         viewport.update(bounds);
-        Self::build(gpu, video, bounds).map_err(|error| error.to_string())
+        Self::build(gpu, video, bounds, signal).map_err(|error| error.to_string())
     }
-    fn build(gpu: &Gpu, video: Video, bounds: Bounds) -> windows::core::Result<Self> {
+    fn build(
+        gpu: &Gpu,
+        video: Video,
+        bounds: Bounds,
+        signal: &Arc<Signal>,
+    ) -> windows::core::Result<Self> {
         unsafe {
             let monitor = MonitorFromPoint(
                 POINT {
@@ -304,6 +336,11 @@ impl Screen {
                 &processor,
                 &D3D11_VIDEO_PROCESSOR_COLOR_SPACE { _bitfield: 16 },
             );
+            let notify = Arc::clone(signal);
+            let token = pool.FrameArrived(&TypedEventHandler::new(move |_, _| {
+                notify.set();
+                Ok(())
+            }))?;
             session.StartCapture()?;
             Ok(Self {
                 bounds,
@@ -320,6 +357,7 @@ impl Screen {
                 width: u32::from(video.height),
                 height: u32::from(video.width),
                 have_frame: false,
+                token,
                 video_context,
                 captured: 0,
                 view: View {
@@ -438,27 +476,20 @@ impl Screen {
         })
     }
     fn acquire(&mut self) -> windows::core::Result<()> {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            let mut latest = None;
-            while let Ok(frame) = self.pool.TryGetNextFrame() {
-                latest = Some(frame);
-            }
-            if let Some(frame) = latest {
-                let surface = frame.Surface()?;
-                let access: IDirect3DDxgiInterfaceAccess = surface.cast()?;
-                let texture: ID3D11Texture2D = unsafe { access.GetInterface()? };
-                unsafe { self.context.CopyResource(&self.source, &texture) };
-                frame.Close()?;
-                self.have_frame = true;
-                self.captured += 1;
-                return Ok(());
-            }
-            if self.have_frame || Instant::now() >= deadline {
-                return Ok(());
-            }
-            thread::sleep(Duration::from_millis(4));
+        let mut latest = None;
+        while let Ok(frame) = self.pool.TryGetNextFrame() {
+            latest = Some(frame);
         }
+        if let Some(frame) = latest {
+            let surface = frame.Surface()?;
+            let access: IDirect3DDxgiInterfaceAccess = surface.cast()?;
+            let texture: ID3D11Texture2D = unsafe { access.GetInterface()? };
+            unsafe { self.context.CopyResource(&self.source, &texture) };
+            frame.Close()?;
+            self.have_frame = true;
+            self.captured += 1;
+        }
+        Ok(())
     }
 }
 impl Bounds {
@@ -490,6 +521,7 @@ impl Bounds {
 impl Drop for Screen {
     fn drop(&mut self) {
         let _ = self.session.Close();
+        let _ = self.pool.RemoveFrameArrived(self.token);
         let _ = self.pool.Close();
     }
 }

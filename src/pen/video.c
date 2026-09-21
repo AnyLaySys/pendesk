@@ -209,5 +209,4 @@ void video_receive(struct input_state *input, struct preview *preview, struct vi
     }
     done:
     audio_stop(&audio);
-    preview_clear(preview);
 }

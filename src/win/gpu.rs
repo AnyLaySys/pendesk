@@ -4,28 +4,13 @@ use windows::Win32::Graphics::Direct3D11::{
     D3D11_SDK_VERSION, ID3D11Device, ID3D11DeviceContext, ID3D11Multithread,
 };
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
-use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
 use windows::core::{Interface, Result};
-struct Com;
-impl Com {
-    fn new() -> Result<Self> {
-        unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok()? };
-        Ok(Self)
-    }
-}
-impl Drop for Com {
-    fn drop(&mut self) {
-        unsafe { CoUninitialize() };
-    }
-}
 pub struct Gpu {
     pub device: ID3D11Device,
     pub context: ID3D11DeviceContext,
-    _com: Com,
 }
 impl Gpu {
     pub fn new() -> Result<Self> {
-        let com = Com::new()?;
         unsafe {
             let mut device = None;
             let mut context = None;
@@ -44,11 +29,7 @@ impl Gpu {
             let context = context.unwrap();
             let multithread: ID3D11Multithread = device.cast()?;
             let _ = multithread.SetMultithreadProtected(true);
-            Ok(Self {
-                device,
-                context,
-                _com: com,
-            })
+            Ok(Self { device, context })
         }
     }
     pub fn dxgi(&self) -> Result<IDXGIDevice> {

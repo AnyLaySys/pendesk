@@ -17,7 +17,7 @@ const icons = {
 
 function control(bytes) {
   const packet = bytes.map(value => ("0" + (value & 255).toString(16)).slice(-2)).join("");
-  native.execShell("/bin/sh -lc " + quote(RUN) + " -- input " + packet);
+  native.execShell("/bin/sh -lc " + quote(RUN) + " -- input " + packet + " >/dev/null 2>&1 &");
 }
 
 function launch() {
@@ -156,8 +156,8 @@ const script = {
     showFiles() {
       this.view = "files";
       this.fileOffset.pen = this.fileOffset.windows = 0;
+      this.fileState = { pen: [], windows: [], transfer: 0, progress: 0 };
       state(true, true);
-      this.loadFiles();
       this.fileAction("reset");
     },
     showDesktop() {
@@ -175,11 +175,11 @@ const script = {
         const selected = this.fileState[side].filter(entry => entry.state === 1).map(entry => entry.name);
         if (!selected.length) return;
         this.fileWatch = { transfer: side === "pen" ? 1 : 2, side, selected, started: false };
-        native.execShell(command + " -- files " + action + " < /dev/null > /dev/null 2>&1 &");
+        native.execShell("/bin/sh -lc " + quote(RUN) + " -- files " + action);
         return this.watchFiles();
       }
-      native.execShell(command + " -- files " + action);
-      (action === "reset" ? [150, 500, 1500, 3000] : [0, 150, 500]).forEach(delay => setTimeout(() => {
+      native.execShell("/bin/sh -lc " + quote(RUN) + " -- files " + action);
+      [200, 1200].forEach(delay => setTimeout(() => {
         if (this.view === "files") this.loadFiles();
       }, delay));
     },
@@ -466,7 +466,7 @@ const render = function () {
   });
   const remoteFrame = classes => create("image", {
     staticClass: classes,
-    attrs: { src: "http://127.0.0.1:7194/frame?" + this.frame },
+    attrs: { src: "http://127.0.0.1:999/frame?" + this.frame },
     on: { load: event => this.schedule(!!event && event.success === false), error: () => this.schedule(true) }
   });
   const icon = (value, classes) => create("div", {

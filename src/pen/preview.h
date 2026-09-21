@@ -10,6 +10,4 @@ void preview_close(struct preview *preview);
 
 int preview_publish(struct preview *preview, const uint8_t *frame, size_t length);
 
-void preview_clear(struct preview *preview);
-
 #endif

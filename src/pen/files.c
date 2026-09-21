@@ -49,6 +49,10 @@ struct file_panel {
     struct file_entry entries[FILE_ENTRIES];
     size_t count;
 };
+enum {
+    QUEUE_SLOTS = 32,
+    QUEUE_ACTION = 64
+};
 struct files {
     char host[256];
     char socks_host[256];
@@ -62,16 +66,26 @@ struct files {
     uint64_t copied;
     uint8_t transfer;
     uint8_t progress;
+    char queue[QUEUE_SLOTS][QUEUE_ACTION];
+    unsigned int head;
+    unsigned int tail;
+    pthread_mutex_t queue_mutex;
+    pthread_cond_t queue_cond;
+    pthread_t worker;
+    bool worker_started;
+    bool stopping;
 };
+
+static void *files_worker(void *argument);
 
 static int wait_fd(int fd, short events) {
     struct pollfd pollfd = {.fd = fd, .events = events};
     while (alive) {
-        int result = poll(&pollfd, 1, -1);
+        int result = poll(&pollfd, 1, 3000);
         if (result > 0) {
             return 0;
         }
-        if (result < 0 && errno != EINTR) {
+        if (result == 0 || (result < 0 && errno != EINTR)) {
             return -1;
         }
     }
@@ -353,6 +367,7 @@ static int remote_list(struct files *files, struct file_panel *panel) {
         if (fd >= 0) {
             close(fd);
         }
+        panel_clear(panel);
         return -1;
     }
     panel_clear(panel);
@@ -376,11 +391,6 @@ static int remote_list(struct files *files, struct file_panel *panel) {
 
 static int refresh_panel(struct files *files, bool pen) {
     return pen ? local_list(&files->pen) : remote_list(files, &files->windows);
-}
-
-static void refresh_all(struct files *files) {
-    refresh_panel(files, true);
-    refresh_panel(files, false);
 }
 
 static int panel_select(struct files *files, bool pen, size_t row) {
@@ -987,38 +997,86 @@ files_new(const char *host, uint16_t port, const char *socks_host, uint16_t sock
         return NULL;
     }
     files->pen.path[0] = '/';
+    unlink(FILE_STATE);
+    if (pthread_mutex_init(&files->queue_mutex, NULL) != 0 ||
+        pthread_cond_init(&files->queue_cond, NULL) != 0 ||
+        pthread_create(&files->worker, NULL, files_worker, files) != 0) {
+        pthread_mutex_destroy(&files->mutex);
+        free(files);
+        return NULL;
+    }
+    files->worker_started = true;
     return files;
 }
 
 void files_free(struct files *files) {
     if (files) {
+        if (files->worker_started) {
+            pthread_mutex_lock(&files->queue_mutex);
+            files->stopping = true;
+            pthread_cond_signal(&files->queue_cond);
+            pthread_mutex_unlock(&files->queue_mutex);
+            pthread_join(files->worker, NULL);
+            pthread_cond_destroy(&files->queue_cond);
+            pthread_mutex_destroy(&files->queue_mutex);
+        }
         pthread_mutex_destroy(&files->mutex);
         free(files);
     }
 }
 
-int files_action(struct files *files, const char *action) {
-    int result = -1;
-    if (!files || !action) {
-        return -1;
-    }
+static void run_action(struct files *files, const char *action) {
     pthread_mutex_lock(&files->mutex);
     if (!strcmp(action, "reset")) {
         files->pen.path[0] = '/';
         files->pen.path[1] = '\0';
         files->windows.path[0] = '\0';
-        refresh_all(files);
-        result = 0;
+        refresh_panel(files, true);
+        state_write(files);
+        refresh_panel(files, false);
     } else if (!strncmp(action, "open/", 5)) {
-        result = action_row(files, action + 5, true);
+        action_row(files, action + 5, true);
     } else if (!strncmp(action, "select/", 7)) {
-        result = action_row(files, action + 7, false);
+        action_row(files, action + 7, false);
     } else if (!strcmp(action, "transfer/push")) {
-        result = transfer(files, true);
+        transfer(files, true);
     } else if (!strcmp(action, "transfer/pull")) {
-        result = transfer(files, false);
+        transfer(files, false);
     }
     state_write(files);
     pthread_mutex_unlock(&files->mutex);
-    return result;
+}
+
+static void *files_worker(void *argument) {
+    struct files *files = argument;
+    pthread_mutex_lock(&files->queue_mutex);
+    while (alive) {
+        while (alive && !files->stopping && files->head == files->tail) {
+            pthread_cond_wait(&files->queue_cond, &files->queue_mutex);
+        }
+        if (files->stopping || !alive) break;
+        char action[QUEUE_ACTION];
+        memcpy(action, files->queue[files->head % QUEUE_SLOTS], QUEUE_ACTION);
+        ++files->head;
+        pthread_mutex_unlock(&files->queue_mutex);
+        run_action(files, action);
+        pthread_mutex_lock(&files->queue_mutex);
+    }
+    pthread_mutex_unlock(&files->queue_mutex);
+    return NULL;
+}
+
+int files_submit(struct files *files, const char *action) {
+    size_t length;
+    if (!files || !action || (length = strlen(action)) >= QUEUE_ACTION) {
+        return -1;
+    }
+    pthread_mutex_lock(&files->queue_mutex);
+    if (files->tail - files->head < QUEUE_SLOTS) {
+        memcpy(files->queue[files->tail % QUEUE_SLOTS], action, length + 1);
+        ++files->tail;
+        pthread_cond_signal(&files->queue_cond);
+    }
+    pthread_mutex_unlock(&files->queue_mutex);
+    return 0;
 }

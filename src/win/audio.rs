@@ -1,20 +1,23 @@
 use std::slice;
-use windows::Win32::Foundation::E_NOTIMPL;
+use windows::Win32::Foundation::{CloseHandle, E_NOTIMPL, HANDLE};
 use windows::Win32::Media::Audio::{
-    AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, IAudioCaptureClient, IAudioClient,
-    IMMDeviceEnumerator, MMDeviceEnumerator, WAVEFORMATEXTENSIBLE, eConsole, eRender,
+    AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK,
+    IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator,
+    WAVEFORMATEXTENSIBLE, eConsole, eRender,
 };
 use windows::Win32::Media::Multimedia::{KSDATAFORMAT_SUBTYPE_IEEE_FLOAT, WAVE_FORMAT_IEEE_FLOAT};
 use windows::Win32::System::Com::{
     CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
     CoUninitialize,
 };
+use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 use windows::core::{Error, Result};
 const WAVE_FORMAT_EXTENSIBLE: u16 = 0xFFFE;
 const AUDCLNT_BUFFERFLAGS_SILENT: u32 = 2;
 pub struct Audio {
     client: IAudioClient,
     capture: IAudioCaptureClient,
+    event: HANDLE,
     channels: usize,
     float: bool,
     pub rate: u32,
@@ -43,7 +46,7 @@ impl Audio {
             }
             let result = client.Initialize(
                 AUDCLNT_SHAREMODE_SHARED,
-                AUDCLNT_STREAMFLAGS_LOOPBACK,
+                AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
                 2_000_000,
                 0,
                 format,
@@ -51,11 +54,14 @@ impl Audio {
             );
             CoTaskMemFree(Some(format.cast()));
             result?;
+            let event = CreateEventW(None, false, false, None)?;
+            client.SetEventHandle(event)?;
             let capture: IAudioCaptureClient = client.GetService()?;
             client.Start()?;
             Ok(Self {
                 client,
                 capture,
+                event,
                 channels,
                 float,
                 rate,
@@ -68,6 +74,7 @@ impl Audio {
     pub fn read(&mut self, output: &mut Vec<u8>) -> Result<()> {
         output.clear();
         unsafe {
+            WaitForSingleObject(self.event, 200);
             while self.capture.GetNextPacketSize()? != 0 {
                 let mut data = std::ptr::null_mut();
                 let mut frames = 0;
@@ -95,6 +102,7 @@ impl Drop for Audio {
     fn drop(&mut self) {
         unsafe {
             let _ = self.client.Stop();
+            let _ = CloseHandle(self.event);
             CoUninitialize();
         }
     }

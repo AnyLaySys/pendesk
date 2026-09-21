@@ -7,7 +7,7 @@ use crate::encoder::Jpeg;
 use crate::files::Disk;
 use crate::gpu::Gpu;
 use crate::input;
-use crate::screen::{Screen, Viewport};
+use crate::screen::{Screen, Signal, Viewport};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Shutdown, TcpStream, UdpSocket};
 use std::os::windows::io::AsRawSocket;
@@ -91,7 +91,8 @@ fn session(
     let video = session.video;
     let gpu = Gpu::new().map_err(|error| error.to_string())?;
     let viewport = Arc::new(Mutex::new(Viewport::new(video)?));
-    let mut screen = Screen::new(&gpu, video, &mut viewport.lock().unwrap())?;
+    let signal = Signal::new()?;
+    let mut screen = Screen::new(&gpu, video, &mut viewport.lock().unwrap(), &signal)?;
     let mut encoder = Jpeg::new(config.quality).map_err(|error| error.to_string())?;
     protocol::write_config(&mut stream, screen.view).map_err(|error| error.to_string())?;
     let peer = all_server::wait_video_peer(video_socket, &config.token, session.nonce)?;
@@ -113,9 +114,7 @@ fn session(
             if audio.read(&mut samples).is_err() {
                 break;
             }
-            if samples.is_empty() {
-                thread::sleep(Duration::from_millis(4));
-            } else {
+            if !samples.is_empty() {
                 all_server::send_audio_frame(&audio_socket, peer, &mut sequence, &samples);
             }
         }
@@ -123,7 +122,7 @@ fn session(
     let input_active = Arc::clone(&active);
     let input_video = Arc::clone(&video_active);
     let input_viewport = Arc::clone(&viewport);
-    let capture_thread = thread::current();
+    let input_signal = Arc::clone(&signal);
     let mut input_stream = stream.try_clone().map_err(|error| error.to_string())?;
     let input_thread = thread::spawn(move || {
         let mut pressed_keys = [false; 256];
@@ -161,7 +160,7 @@ fn session(
                         }
                     }
                     input_video.store(enabled, Ordering::Relaxed);
-                    capture_thread.unpark();
+                    input_signal.set();
                 }
                 Ok(Input::Wheel(delta)) => {
                     let _ = input::wheel(delta);
@@ -180,22 +179,34 @@ fn session(
             }
         }
         input_active.store(false, Ordering::Relaxed);
-        capture_thread.unpark();
+        input_signal.set();
     });
-    let delay = Duration::from_secs_f64(1.0 / f64::from(config.fps));
+    let interval = Duration::from_secs_f64(1.0 / f64::from(config.fps));
     let mut frame = Vec::new();
     let mut sequence = 0u32;
     let mut last_area = None;
     let mut last_captured = 0u64;
+    let mut last_sent = Instant::now() - interval;
     let result = (|| {
         while active.load(Ordering::Relaxed) {
             if !video_active.load(Ordering::Relaxed) {
-                thread::park();
+                signal.wait(u32::MAX);
                 continue;
             }
-            let started = Instant::now();
+            let elapsed = last_sent.elapsed();
+            if elapsed < interval {
+                signal.wait((interval - elapsed).as_millis() as u32);
+            } else {
+                signal.wait(u32::MAX);
+            }
+            if !active.load(Ordering::Relaxed)
+                || !video_active.load(Ordering::Relaxed)
+                || last_sent.elapsed() < interval
+            {
+                continue;
+            }
             if screen.changed() {
-                screen = Screen::new(&gpu, video, &mut viewport.lock().unwrap())?;
+                screen = Screen::new(&gpu, video, &mut viewport.lock().unwrap(), &signal)?;
                 protocol::write_config(&mut stream, screen.view)
                     .map_err(|error| error.to_string())?;
             }
@@ -210,11 +221,9 @@ fn session(
                     .map_err(|error| error.to_string())?;
                 if !frame.is_empty() {
                     sequence = sequence.wrapping_add(1);
+                    last_sent = Instant::now();
                     all_server::send_video_frame(video_socket, peer, sequence, &frame);
                 }
-            }
-            if let Some(remaining) = delay.checked_sub(started.elapsed()) {
-                thread::sleep(remaining);
             }
         }
         Ok(())

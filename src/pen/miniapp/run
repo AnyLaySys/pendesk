@@ -19,11 +19,15 @@ if [ "${1:-}" = files ]; then
             ;;
         *) exit 2 ;;
     esac
-    if [ "$action" = reset ]; then
-        /bin/setsid curl -fsS "http://127.0.0.1:7194/files/$action" < /dev/null > /dev/null 2>&1 &
-        exit
-    fi
-    exec curl -fsS "http://127.0.0.1:7194/files/$action"
+    case "$action" in
+        transfer/*)
+            /bin/setsid curl -fsS --max-time 600 "http://127.0.0.1:999/files/$action" < /dev/null > /dev/null 2>&1 &
+            ;;
+        *)
+            curl -fsS --max-time 15 "http://127.0.0.1:999/files/$action" < /dev/null > /dev/null 2>&1 || :
+            ;;
+    esac
+    exit
 fi
 alive() {
     pid=$(cat "$1" 2>/dev/null) || return 1
