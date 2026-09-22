@@ -420,9 +420,8 @@ static int read_control(struct input_state *input) {
         while (offset < (size_t) count) {
             uint8_t type = packet[offset];
             size_t length =
-                    type == 2 ? 2 : type == 0x20 ? 5 : type == 0x21 || type == 0x26 ? 3 : type ==
-                                                                                          0x23 ? 4
-                                                                                               : 0;
+                    type == 2 || type == 0x27 ? 2 : type == 0x20 ? 5 : type == 0x21 ||
+                    type == 0x26 ? 3 : type == 0x23 ? 4 : 0;
             if (!length || offset + length > (size_t) count) return 0;
             if (type == 2) {
                 bool paused = packet[offset + 1] & STATE_VIDEO_PAUSED;

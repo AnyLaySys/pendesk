@@ -14,7 +14,7 @@ use std::os::windows::io::AsRawSocket;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{
-    Arc, Mutex,
+    Arc, Condvar, Mutex,
     atomic::{AtomicBool, Ordering},
 };
 use std::thread;
@@ -98,24 +98,38 @@ fn session(
     let peer = all_server::wait_video_peer(video_socket, &config.token, session.nonce)?;
     let active = Arc::new(AtomicBool::new(true));
     let video_active = Arc::new(AtomicBool::new(true));
+    let audio_gate = Arc::new((Mutex::new(false), Condvar::new()));
     let audio_active = Arc::clone(&active);
+    let audio_control = Arc::clone(&audio_gate);
     let audio_socket = video_socket.try_clone().map_err(|error| error.to_string())?;
     let mut audio_stream = stream.try_clone().map_err(|error| error.to_string())?;
     let audio_thread = thread::spawn(move || {
-        let Ok(mut audio) = Audio::new() else {
-            return;
-        };
-        if protocol::write_audio(&mut audio_stream, audio.rate, audio.channels()).is_err() {
-            return;
-        }
         let mut samples = Vec::new();
         let mut sequence = 0u32;
         while audio_active.load(Ordering::Relaxed) {
-            if audio.read(&mut samples).is_err() {
+            {
+                let (lock, cond) = &*audio_control;
+                let mut on = lock.lock().unwrap();
+                while !*on && audio_active.load(Ordering::Relaxed) {
+                    on = cond.wait(on).unwrap();
+                }
+            }
+            if !audio_active.load(Ordering::Relaxed) {
                 break;
             }
-            if !samples.is_empty() {
-                all_server::send_audio_frame(&audio_socket, peer, &mut sequence, &samples);
+            let Ok(mut audio) = Audio::new() else {
+                continue;
+            };
+            if protocol::write_audio(&mut audio_stream, audio.rate, audio.channels()).is_err() {
+                break;
+            }
+            while audio_active.load(Ordering::Relaxed) && *audio_control.0.lock().unwrap() {
+                if audio.read(&mut samples).is_err() {
+                    break;
+                }
+                if !samples.is_empty() {
+                    all_server::send_audio_frame(&audio_socket, peer, &mut sequence, &samples);
+                }
             }
         }
     });
@@ -123,6 +137,7 @@ fn session(
     let input_video = Arc::clone(&video_active);
     let input_viewport = Arc::clone(&viewport);
     let input_signal = Arc::clone(&signal);
+    let input_gate = Arc::clone(&audio_gate);
     let mut input_stream = stream.try_clone().map_err(|error| error.to_string())?;
     let input_thread = thread::spawn(move || {
         let mut pressed_keys = [false; 256];
@@ -164,6 +179,11 @@ fn session(
                 }
                 Ok(Input::Wheel(delta)) => {
                     let _ = input::wheel(delta);
+                }
+                Ok(Input::Audio(enabled)) => {
+                    let (lock, cond) = &*input_gate;
+                    *lock.lock().unwrap() = enabled;
+                    cond.notify_one();
                 }
                 _ => break,
             }
@@ -229,6 +249,7 @@ fn session(
         Ok(())
     })();
     active.store(false, Ordering::Relaxed);
+    audio_gate.1.notify_one();
     let _ = stream.shutdown(Shutdown::Both);
     let _ = input_thread.join();
     let _ = audio_thread.join();

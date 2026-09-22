@@ -10,6 +10,7 @@ const KEY: u8 = 0x23;
 const ZOOM: u8 = 0x24;
 const VIDEO: u8 = 0x25;
 const WHEEL: u8 = 0x26;
+const AUDIO_TOGGLE: u8 = 0x27;
 #[derive(Clone, Copy)]
 pub struct Video {
     pub width: u16,
@@ -34,6 +35,7 @@ pub enum Input {
     Zoom(i16),
     Video(bool),
     Wheel(i16),
+    Audio(bool),
 }
 pub fn authenticate_with_magic(
     stream: &mut TcpStream,
@@ -111,6 +113,11 @@ pub fn read_input(stream: &mut TcpStream) -> io::Result<Input> {
             }
         }
         WHEEL => Ok(Input::Wheel(read_i16(stream)?)),
+        AUDIO_TOGGLE => {
+            let mut state = [0];
+            stream.read_exact(&mut state)?;
+            Ok(Input::Audio(state[0] != 0))
+        }
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "unknown input packet",

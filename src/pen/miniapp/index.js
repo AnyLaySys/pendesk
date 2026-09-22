@@ -12,7 +12,7 @@ const STATE_BLOCKED = 1;
 const STATE_VIDEO_PAUSED = 2;
 const FONT = "Google Sans Flex";
 const icons = {
-  keyboard: "kb.png", folder: "folder.png", file: "file.png", back: "back.png"
+  keyboard: "kb.png", folder: "folder.png", file: "file.png", back: "back.png", sound: "sound.png"
 };
 
 function control(bytes) {
@@ -78,7 +78,7 @@ const script = {
       state(false, false);
     } catch {}
     return {
-      active: true, ready: false, frame: Date.now(), job: null, view: "desktop", pad: null, held: [], fileTouch: null, fileScrolled: false,
+      active: true, ready: false, frame: Date.now(), job: null, guard: null, view: "desktop", pad: null, held: [], fileTouch: null, fileScrolled: false, audioOn: false,
       fileState: { pen: [], windows: [], transfer: 0, progress: 0 }, fileOffset: { pen: 0, windows: 0 }, fileWatch: null,
       caps: false, modifiers: { Shift: false, Ctrl: false, Win: false, Alt: false }
     };
@@ -100,6 +100,7 @@ const script = {
   },
   methods: {
     schedule(failed) {
+      if (this.guard !== null) { clearTimeout(this.guard); this.guard = null; }
       if (!this.active || (this.view !== "desktop" && this.view !== "keyboard") || this.job !== null) return;
       if (failed) {
         this.ready = false;
@@ -114,21 +115,31 @@ const script = {
       }, failed ? 500 : 0);
     },
     requestFrame() {
-      if (this.active && (this.view === "desktop" || this.view === "keyboard")) this.frame++;
+      if (!this.active || (this.view !== "desktop" && this.view !== "keyboard")) return;
+      this.frame++;
+      if (this.guard !== null) clearTimeout(this.guard);
+      this.guard = setTimeout(() => { this.guard = null; this.requestFrame(); }, 900);
     },
     cancelFrame() {
       if (this.job !== null) clearTimeout(this.job);
+      if (this.guard !== null) clearTimeout(this.guard);
       this.job = null;
+      this.guard = null;
     },
     suspend() {
       if (!this.active) return;
       this.active = false;
       this.ready = false;
       this.view = "desktop";
+      this.audioOn = false;
       this.cancelFrame();
       this.finishPad(false);
       this.releaseKeys();
       state(true, true);
+    },
+    toggleAudio() {
+      this.audioOn = !this.audioOn;
+      control([0x27, this.audioOn ? 1 : 0]);
     },
     releaseKeys() {
       const packet = [];
@@ -420,8 +431,10 @@ const style = {
     tools: { width: "100%", height: "100%", position: "relative" },
     toolItem: { position: "absolute", top: 9, width: 162, height: 27, flexDirection: "row", alignItems: "center", backgroundColor: "#191B21", borderRadius: 3 },
     toolKeyboard: { left: 72 },
-    toolFiles: { left: 246 },
+    toolSound: { left: 246 },
+    toolFiles: { left: 420 },
     toolText: { color: "#d9e1e8", fontSize: 18, lineHeight: "27px" },
+    toolTextOn: { color: "#a8c7fa" },
     toolBack: { position: "absolute", top: 9, left: 9, width: 27, height: 27, alignItems: "center", justifyContent: "center" },
     toolBackIcon: { width: 27, height: 27 },
     toolItemIcon: { width: 27, height: 27, marginLeft: 8, marginRight: 12 },
@@ -507,6 +520,10 @@ const render = function () {
       create("div", { staticClass: ["toolItem", "toolKeyboard"], on: { click: () => this.showKeyboard() } }, [
         icon(icons.keyboard, ["toolItemIcon"]),
         text("键盘", ["toolText"])
+      ]),
+      create("div", { staticClass: ["toolItem", "toolSound"], on: { click: () => this.toggleAudio() } }, [
+        icon(icons.sound, ["toolItemIcon"]),
+        text("声音", ["toolText"].concat(this.audioOn ? ["toolTextOn"] : []))
       ]),
       create("div", { staticClass: ["toolItem", "toolFiles"], on: { click: () => this.showFiles() } }, [
         icon(icons.folder, ["toolItemIcon"]),

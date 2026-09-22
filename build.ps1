@@ -270,7 +270,8 @@ function Build-Package([string]$Output) {
         (Join-Path $miniAppSource 'back.png'),
         (Join-Path $miniAppSource 'file.png'),
         (Join-Path $miniAppSource 'folder.png'),
-        (Join-Path $miniAppSource 'kb.png')
+        (Join-Path $miniAppSource 'kb.png'),
+        (Join-Path $miniAppSource 'sound.png')
     )
     $requiredFiles = $miniAppFiles + $miniAppIcons + @(
         (Join-Path $miniAppSource 'run'),
