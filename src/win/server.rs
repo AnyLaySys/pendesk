@@ -202,22 +202,22 @@ fn session(
         input_signal.set();
     });
     let interval = Duration::from_secs_f64(1.0 / f64::from(config.fps));
+    let keyframe = Duration::from_secs(1);
     let mut frame = Vec::new();
     let mut sequence = 0u32;
     let mut last_area = None;
     let mut last_captured = 0u64;
-    let mut last_sent = Instant::now() - interval;
+    let mut last_sent = Instant::now() - keyframe;
     let result = (|| {
         while active.load(Ordering::Relaxed) {
             if !video_active.load(Ordering::Relaxed) {
                 signal.wait(u32::MAX);
                 continue;
             }
-            let elapsed = last_sent.elapsed();
-            if elapsed < interval {
-                signal.wait((interval - elapsed).as_millis() as u32);
-            } else {
-                signal.wait(u32::MAX);
+            let since = last_sent.elapsed();
+            if since < keyframe {
+                let wait = if since < interval { interval - since } else { keyframe - since };
+                signal.wait(wait.as_millis() as u32);
             }
             if !active.load(Ordering::Relaxed)
                 || !video_active.load(Ordering::Relaxed)
@@ -232,9 +232,15 @@ fn session(
             }
             let area = viewport.lock().unwrap().capture();
             let before = last_captured;
-            let captured = screen.capture(area)?;
+            let captured = match screen.capture(area)? {
+                Some(captured) => captured,
+                None => {
+                    signal.wait(u32::MAX);
+                    continue;
+                }
+            };
             last_captured = captured.captured;
-            if before != captured.captured || last_area != Some(area) {
+            if last_sent.elapsed() >= keyframe || before != captured.captured || last_area != Some(area) {
                 last_area = Some(area);
                 encoder
                     .encode(&captured, &mut frame)

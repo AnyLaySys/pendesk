@@ -15,9 +15,10 @@ const icons = {
   keyboard: "kb.png", folder: "folder.png", file: "file.png", back: "back.png", sound: "sound.png"
 };
 
-function control(bytes) {
+function control(bytes, ordered = false) {
   const packet = bytes.map(value => ("0" + (value & 255).toString(16)).slice(-2)).join("");
-  native.execShell("/bin/sh -lc " + quote(RUN) + " -- input " + packet + " >/dev/null 2>&1 &");
+  const command = "/bin/sh -lc " + quote(RUN) + " -- input " + packet + " >/dev/null 2>&1";
+  native.execShell(ordered ? command : command + " &");
 }
 
 function launch() {
@@ -25,7 +26,7 @@ function launch() {
 }
 
 function state(blocked, paused) {
-  control([2, (blocked ? STATE_BLOCKED : 0) | (paused ? STATE_VIDEO_PAUSED : 0)]);
+  control([2, (blocked ? STATE_BLOCKED : 0) | (paused ? STATE_VIDEO_PAUSED : 0)], true);
 }
 
 const keys = {
@@ -117,8 +118,11 @@ const script = {
     requestFrame() {
       if (!this.active || (this.view !== "desktop" && this.view !== "keyboard")) return;
       this.frame++;
+    },
+    poke() {
+      if (!this.active || (this.view !== "desktop" && this.view !== "keyboard")) return;
       if (this.guard !== null) clearTimeout(this.guard);
-      this.guard = setTimeout(() => { this.guard = null; this.requestFrame(); }, 900);
+      this.guard = setTimeout(() => { this.guard = null; this.schedule(true); }, 1500);
     },
     cancelFrame() {
       if (this.job !== null) clearTimeout(this.job);
@@ -328,6 +332,7 @@ const script = {
       pad.x = point.x;
       pad.y = point.y;
       if (!dx && !dy) return;
+      this.poke();
       if (!pad.moved && Math.abs(point.x - pad.originX) + Math.abs(point.y - pad.originY) > 4) {
         pad.moved = true;
         if (pad.press !== null) clearTimeout(pad.press);
@@ -351,7 +356,7 @@ const script = {
       const packet = this.padPacket(pad);
       if (pad.dragging) packet.push(...button(1, false));
       else if (click && !pad.moved) packet.push(...button(pad.max > 1 ? 2 : 1, true), ...button(pad.max > 1 ? 2 : 1, false));
-      if (packet.length) control(packet);
+      if (packet.length) { this.poke(); control(packet); }
     },
     padEnd(event) {
       const pad = this.pad;
@@ -381,6 +386,7 @@ const script = {
       packet.push(0x23, 0, code, 1, 0x23, 0, code, 0);
       if (shift) packet.push(0x23, 0, 16, 0);
       control(packet);
+      this.poke();
     },
     keyStart(entry, event) {
       this.keyPoints(event).forEach(point => {
@@ -434,7 +440,7 @@ const style = {
     toolSound: { left: 246 },
     toolFiles: { left: 420 },
     toolText: { color: "#d9e1e8", fontSize: 18, lineHeight: "27px" },
-    toolTextOn: { color: "#a8c7fa" },
+    toolTextOn: { color: "#0078d4" },
     toolBack: { position: "absolute", top: 9, left: 9, width: 27, height: 27, alignItems: "center", justifyContent: "center" },
     toolBackIcon: { width: 27, height: 27 },
     toolItemIcon: { width: 27, height: 27, marginLeft: 8, marginRight: 12 },

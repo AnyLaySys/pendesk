@@ -234,10 +234,6 @@ function Build {
     Fetch-Tailscale
     Build-MiniAppCode
     Build-Package $package
-    & (Join-Path $target 'release\pendesk.exe') stop
-    if ($LASTEXITCODE -ne 0) { throw 'Could not stop the running host' }
-    Start-Sleep -Milliseconds 200
-    Copy-Item (Join-Path $target 'release\pendesk.exe') -Destination $hostExecutable -Force
 }
 
 function New-AMR([string]$Source, [string]$Destination) {

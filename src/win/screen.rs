@@ -418,10 +418,10 @@ impl Screen {
     pub fn changed(&self) -> bool {
         Bounds::current().is_ok_and(|bounds| bounds != self.bounds)
     }
-    pub fn capture(&mut self, (x, y, width, height): (i32, i32, i32, i32)) -> Result<Frame<'_>, String> {
+    pub fn capture(&mut self, (x, y, width, height): (i32, i32, i32, i32)) -> Result<Option<Frame<'_>>, String> {
         self.acquire().map_err(|error| error.to_string())?;
         if !self.have_frame {
-            return Err("no desktop frame was captured".into());
+            return Ok(None);
         }
         let rect = RECT {
             left: x - self.bounds.left,
@@ -467,13 +467,13 @@ impl Screen {
             }
             self.context.Unmap(&self.staging, 0);
         }
-        Ok(Frame {
+        Ok(Some(Frame {
             pixels: &self.pixels,
             width: self.width,
             height: self.height,
             stride: self.width * 3,
             captured: self.captured,
-        })
+        }))
     }
     fn acquire(&mut self) -> windows::core::Result<()> {
         let mut latest = None;
