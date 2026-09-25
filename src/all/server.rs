@@ -25,8 +25,8 @@ pub trait Backend: Send + Sync {
 }
 #[derive(Clone, Copy)]
 pub struct VideoPeer {
-    address: SocketAddr,
-    nonce: [u8; 8],
+    pub address: SocketAddr,
+    pub nonce: [u8; 8],
 }
 pub fn run(
     config: Config,

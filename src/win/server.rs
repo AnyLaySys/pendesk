@@ -7,6 +7,7 @@ use crate::encoder::Jpeg;
 use crate::files::Disk;
 use crate::gpu::Gpu;
 use crate::input;
+use crate::mic::Playback;
 use crate::screen::{Screen, Signal, Viewport};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Shutdown, TcpStream, UdpSocket};
@@ -19,7 +20,32 @@ use std::sync::{
 };
 use std::thread;
 use std::time::{Duration, Instant};
-use windows::Win32::Networking::WinSock::{SO_SNDBUF, SOCKET, SOL_SOCKET, setsockopt};
+use windows::Win32::Networking::WinSock::{
+    FD_READ, SOCKET, SOL_SOCKET, SO_SNDBUF, WSAEVENT, WSACloseEvent, WSACreateEvent, WSAEventSelect,
+    setsockopt,
+};
+struct MicSocket {
+    socket: SOCKET,
+    event: WSAEVENT,
+}
+impl MicSocket {
+    fn new(socket: SOCKET) -> Result<Self, String> {
+        let event = unsafe { WSACreateEvent() }.map_err(|error| error.to_string())?;
+        if unsafe { WSAEventSelect(socket, Some(event), FD_READ as i32) } != 0 {
+            unsafe { let _ = WSACloseEvent(event); }
+            return Err("could not watch microphone packets".into());
+        }
+        Ok(Self { socket, event })
+    }
+}
+impl Drop for MicSocket {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = WSAEventSelect(self.socket, None, 0);
+            let _ = WSACloseEvent(self.event);
+        }
+    }
+}
 struct Windows;
 impl Backend for Windows {
     fn tune_video(&self, socket: &UdpSocket) {
@@ -96,6 +122,7 @@ fn session(
     let mut encoder = Jpeg::new(config.quality).map_err(|error| error.to_string())?;
     protocol::write_config(&mut stream, screen.view).map_err(|error| error.to_string())?;
     let peer = all_server::wait_video_peer(video_socket, &config.token, session.nonce)?;
+    let mic_socket = MicSocket::new(SOCKET(video_socket.as_raw_socket() as usize))?;
     let active = Arc::new(AtomicBool::new(true));
     let video_active = Arc::new(AtomicBool::new(true));
     let audio_gate = Arc::new((Mutex::new(false), Condvar::new()));
@@ -208,17 +235,24 @@ fn session(
     let mut last_area = None;
     let mut last_captured = 0u64;
     let mut last_sent = Instant::now() - keyframe;
+    let mut playback = None;
     let result = (|| {
         while active.load(Ordering::Relaxed) {
             if !video_active.load(Ordering::Relaxed) {
-                signal.wait(u32::MAX);
+                let ready = wait_socket(&signal, &mic_socket, 20);
+                let _ = ready;
+                receive_microphone(video_socket, peer, &mut playback);
                 continue;
             }
             let since = last_sent.elapsed();
-            if since < keyframe {
+            let ready = if since < keyframe {
                 let wait = if since < interval { interval - since } else { keyframe - since };
-                signal.wait(wait.as_millis() as u32);
-            }
+                wait_socket(&signal, &mic_socket, wait.as_millis() as u32)
+            } else {
+                wait_socket(&signal, &mic_socket, interval.as_millis() as u32)
+            };
+            let _ = ready;
+            receive_microphone(video_socket, peer, &mut playback);
             if !active.load(Ordering::Relaxed)
                 || !video_active.load(Ordering::Relaxed)
                 || last_sent.elapsed() < interval
@@ -235,7 +269,9 @@ fn session(
             let captured = match screen.capture(area)? {
                 Some(captured) => captured,
                 None => {
-                    signal.wait(u32::MAX);
+                    let ready = wait_socket(&signal, &mic_socket, 20);
+                    let _ = ready;
+                    receive_microphone(video_socket, peer, &mut playback);
                     continue;
                 }
             };
@@ -256,8 +292,47 @@ fn session(
     })();
     active.store(false, Ordering::Relaxed);
     audio_gate.1.notify_one();
+    drop(playback);
     let _ = stream.shutdown(Shutdown::Both);
     let _ = input_thread.join();
     let _ = audio_thread.join();
     result
+}
+
+fn wait_socket(signal: &Signal, socket: &MicSocket, milliseconds: u32) -> bool {
+    signal.wait_socket(socket.socket, socket.event, milliseconds)
+}
+
+fn receive_microphone(socket: &UdpSocket, peer: all_server::VideoPeer, playback: &mut Option<Playback>) {
+    let mut packet = [0; 1400];
+    loop {
+        match socket.recv_from(&mut packet) {
+            Ok((length, _address)) if length >= 14 && packet[..4] == *b"PDSM" && packet[4] == protocol::VERSION && packet[5..13] == peer.nonce => {
+                if packet[13] == 0 {
+                    *playback = None;
+                } else if packet[13] == 1 {
+                    if playback.is_none() {
+                        *playback = match Playback::new() {
+                            Ok(playback) => Some(playback),
+                            Err(error) => {
+                                eprintln!("{error}");
+                                None
+                            }
+                        };
+                    }
+                    if length > 14 {
+                        if let Some(player) = playback.as_mut() {
+                            if let Err(error) = player.packet(&packet[14..length]) {
+                                eprintln!("{error}");
+                                *playback = None;
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+            Err(error) => { eprintln!("{error}"); break; }
+        }
+    }
 }

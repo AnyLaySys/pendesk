@@ -13,6 +13,8 @@ mod files;
 mod gpu;
 #[path = "win/input.rs"]
 mod input;
+#[path = "win/mic.rs"]
+mod mic;
 #[path = "win/runtime.rs"]
 mod runtime;
 #[path = "win/screen.rs"]

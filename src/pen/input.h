@@ -18,5 +18,6 @@ void input_stop(struct input_state *input);
 void input_set_view(struct input_state *input, struct view view);
 
 bool input_paused(const struct input_state *input);
+bool input_recording(const struct input_state *input);
 
 #endif

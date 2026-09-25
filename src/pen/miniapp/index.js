@@ -10,9 +10,11 @@ const quote = value => "'" + value.replace(/'/g, "'\\''") + "'";
 const command = "/bin/setsid /bin/sh -lc " + quote("rm -f " + CACHE + "; " + RUN);
 const STATE_BLOCKED = 1;
 const STATE_VIDEO_PAUSED = 2;
+const STATE_MOUSE_PAUSED = 4;
+const STATE_RECORDING = 8;
 const FONT = "Google Sans Flex";
 const icons = {
-  keyboard: "kb.png", folder: "folder.png", file: "file.png", back: "back.png", sound: "sound.png"
+  screen: "view.png", mouse: "mouse.png", keyboard: "kb.png", mic: "mic.png", folder: "folder.png", file: "file.png", back: "back.png", sound: "sound.png"
 };
 
 function control(bytes, ordered = false) {
@@ -25,8 +27,12 @@ function launch() {
   native.execShell(command + " < /dev/null > /dev/null 2>&1 &");
 }
 
-function state(blocked, paused) {
-  control([2, (blocked ? STATE_BLOCKED : 0) | (paused ? STATE_VIDEO_PAUSED : 0)], true);
+function shutdown() {
+  native.execShell("/bin/sh -lc " + quote(RUN) + " stop >/dev/null 2>&1 &");
+}
+
+function state(blocked, paused, mousePaused = false, recording = false) {
+  control([2, (blocked ? STATE_BLOCKED : 0) | (paused ? STATE_VIDEO_PAUSED : 0) | (mousePaused ? STATE_MOUSE_PAUSED : 0) | (recording ? STATE_RECORDING : 0)], true);
 }
 
 const keys = {
@@ -79,7 +85,7 @@ const script = {
       state(false, false);
     } catch {}
     return {
-      active: true, ready: false, frame: Date.now(), job: null, guard: null, view: "desktop", pad: null, held: [], fileTouch: null, fileScrolled: false, audioOn: false,
+      active: true, ready: false, frame: Date.now(), job: null, guard: null, view: "desktop", pad: null, held: [], fileTouch: null, fileScrolled: false, audioOn: false, screenOn: true, mouseOn: true, micOn: false,
       fileState: { pen: [], windows: [], transfer: 0, progress: 0 }, fileOffset: { pen: 0, windows: 0 }, fileWatch: null,
       caps: false, modifiers: { Shift: false, Ctrl: false, Win: false, Alt: false }
     };
@@ -90,7 +96,7 @@ const script = {
     if (!resumed) return this.requestFrame();
     launch();
     this.view = "desktop";
-    state(false, false);
+    state(false, !this.screenOn, !this.mouseOn, this.micOn);
     this.requestFrame();
   },
   deactivated() {
@@ -102,12 +108,12 @@ const script = {
   methods: {
     schedule(failed) {
       if (this.guard !== null) { clearTimeout(this.guard); this.guard = null; }
-      if (!this.active || (this.view !== "desktop" && this.view !== "keyboard") || this.job !== null) return;
+      if (!this.active || !this.screenOn || (this.view !== "desktop" && this.view !== "keyboard") || this.job !== null) return;
       if (failed) {
         this.ready = false;
-        state(this.view === "keyboard", false);
+        state(this.view === "keyboard", false, this.view !== "desktop" || !this.mouseOn, this.micOn);
       } else if (!this.ready) {
-        state(this.view === "keyboard", false);
+        state(this.view === "keyboard", false, this.view !== "desktop" || !this.mouseOn, this.micOn);
         this.ready = true;
       }
       this.job = setTimeout(() => {
@@ -116,7 +122,7 @@ const script = {
       }, failed ? 500 : 0);
     },
     requestFrame() {
-      if (!this.active || (this.view !== "desktop" && this.view !== "keyboard")) return;
+      if (!this.active || !this.screenOn || (this.view !== "desktop" && this.view !== "keyboard")) return;
       this.frame++;
     },
     poke() {
@@ -136,14 +142,33 @@ const script = {
       this.ready = false;
       this.view = "desktop";
       this.audioOn = false;
+      if (this.micOn) { this.micOn = false; control([0x28, 0], true); }
       this.cancelFrame();
       this.finishPad(false);
       this.releaseKeys();
-      state(true, true);
+      state(true, true, true, this.micOn);
+      shutdown();
     },
     toggleAudio() {
+      if (this.micOn) return;
       this.audioOn = !this.audioOn;
       control([0x27, this.audioOn ? 1 : 0]);
+    },
+    toggleMic() {
+      this.micOn = !this.micOn;
+      if (this.micOn && this.audioOn) {
+        this.audioOn = false;
+        control([0x27, 0]);
+      }
+      control([0x28, this.micOn ? 1 : 0], true);
+      state(true, true, true, this.micOn);
+    },
+    toggleScreen() {
+      this.screenOn = !this.screenOn;
+    },
+    toggleMouse() {
+      this.mouseOn = !this.mouseOn;
+      state(true, true, true, this.micOn);
     },
     releaseKeys() {
       const packet = [];
@@ -161,25 +186,25 @@ const script = {
       this.releaseKeys();
       this.cancelFrame();
       this.view = "tools";
-      state(true, true);
+      state(true, true, true, this.micOn);
     },
     showKeyboard() {
       this.view = "keyboard";
-      this.frame++;
-      state(true, false);
+      if (this.screenOn) this.frame++;
+      state(true, !this.screenOn, true, this.micOn);
     },
     showFiles() {
       this.view = "files";
       this.fileOffset.pen = this.fileOffset.windows = 0;
       this.fileState = { pen: [], windows: [], transfer: 0, progress: 0 };
-      state(true, true);
+      state(true, true, true, this.micOn);
       this.fileAction("reset");
     },
     showDesktop() {
       this.finishPad(false);
       this.releaseKeys();
       this.view = "desktop";
-      state(false, false);
+      state(false, !this.screenOn, !this.mouseOn, this.micOn);
       this.requestFrame();
     },
     fileAction(action) {
@@ -277,6 +302,7 @@ const script = {
       return { x: x / touches.length, y: y / touches.length };
     },
     padStart(event) {
+      if (this.view !== "keyboard" || !this.mouseOn) return;
       const touches = this.padTouches(event);
       const changed = event && event.changedTouches || touches;
       if (!changed.length) return;
@@ -411,7 +437,7 @@ const script = {
           this.tap(label);
           held.timer = setTimeout(repeat, 30);
         };
-        held.timer = setTimeout(repeat, 90);
+        held.timer = setTimeout(repeat, 180);
       });
     },
     keyEnd(event) {
@@ -435,10 +461,13 @@ const style = {
     desktop: { width: "100%", height: "100%", position: "absolute", top: 0, left: 0 },
     toolToggle: { position: "absolute", bottom: 8, right: 8, width: 27, height: 27, borderRadius: 14, backgroundColor: "#0078d4" },
     tools: { width: "100%", height: "100%", position: "relative" },
-    toolItem: { position: "absolute", top: 9, width: 162, height: 27, flexDirection: "row", alignItems: "center", backgroundColor: "#191B21", borderRadius: 3 },
-    toolKeyboard: { left: 72 },
-    toolSound: { left: 246 },
-    toolFiles: { left: 420 },
+    toolItem: { position: "absolute", top: 9, width: 130, height: 27, flexDirection: "row", alignItems: "center", backgroundColor: "#191B21", borderRadius: 3 },
+    toolScreen: { left: 48 },
+    toolMouse: { left: 188 },
+    toolKeyboard: { left: 328 },
+    toolMic: { left: 468 },
+    toolSound: { left: 608 },
+    toolFiles: { left: 748 },
     toolText: { color: "#d9e1e8", fontSize: 18, lineHeight: "27px" },
     toolTextOn: { color: "#0078d4" },
     toolBack: { position: "absolute", top: 9, left: 9, width: 27, height: 27, alignItems: "center", justifyContent: "center" },
@@ -483,11 +512,11 @@ const render = function () {
   const text = (value, classes, style) => create("text", {
     staticClass: ["font"].concat(classes), style, attrs: { value }
   });
-  const remoteFrame = classes => create("image", {
+  const remoteFrame = classes => this.screenOn ? create("image", {
     staticClass: classes,
     attrs: { src: "http://127.0.0.1:999/frame?" + this.frame },
     on: { load: event => this.schedule(!!event && event.success === false), error: () => this.schedule(true) }
-  });
+  }) : create("div", { staticClass: classes });
   const icon = (value, classes) => create("div", {
     staticClass: classes,
     style: { backgroundImage: "url(" + value + ")", backgroundSize: "contain", backgroundRepeat: "no-repeat", backgroundPosition: "center" }
@@ -523,9 +552,21 @@ const render = function () {
   }
   if (this.view === "tools") {
     return create("div", { staticClass: ["tools"] }, [
+      create("div", { staticClass: ["toolItem", "toolScreen"], on: { click: () => this.toggleScreen() } }, [
+        icon(icons.screen, ["toolItemIcon"]),
+        text("显示", ["toolText"].concat(this.screenOn ? ["toolTextOn"] : []))
+      ]),
+      create("div", { staticClass: ["toolItem", "toolMouse"], on: { click: () => this.toggleMouse() } }, [
+        icon(icons.mouse, ["toolItemIcon"]),
+        text("鼠标", ["toolText"].concat(this.mouseOn ? ["toolTextOn"] : []))
+      ]),
       create("div", { staticClass: ["toolItem", "toolKeyboard"], on: { click: () => this.showKeyboard() } }, [
         icon(icons.keyboard, ["toolItemIcon"]),
         text("键盘", ["toolText"])
+      ]),
+      create("div", { staticClass: ["toolItem", "toolMic"], on: { click: () => this.toggleMic() } }, [
+        icon(icons.mic, ["toolItemIcon"]),
+        text("录音", ["toolText"].concat(this.micOn ? ["toolTextOn"] : []))
       ]),
       create("div", { staticClass: ["toolItem", "toolSound"], on: { click: () => this.toggleAudio() } }, [
         icon(icons.sound, ["toolItemIcon"]),

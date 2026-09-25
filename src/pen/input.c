@@ -145,7 +145,7 @@ static bool map_touch(const struct input_state *input, const struct contact *con
               UINT16_MAX;
     point_y = (uint32_t) scale(contact->y, touch->y_min, touch->y_max) * (input->mode.height - 1) /
               UINT16_MAX;
-    if (input->blocked || (touch->gesture == GESTURE_IDLE &&
+    if (!input->mouse || input->blocked || (touch->gesture == GESTURE_IDLE &&
                            (point_x < 6 || point_x + 6 >= input->mode.width ||
                             (point_x + 44 >= input->mode.width && point_y < 60))))
         return false;
@@ -421,18 +421,25 @@ static int read_control(struct input_state *input) {
             uint8_t type = packet[offset];
             size_t length =
                     type == 2 || type == 0x27 ? 2 : type == 0x20 ? 5 : type == 0x21 ||
-                    type == 0x26 ? 3 : type == 0x23 ? 4 : 0;
+                    type == 0x26 ? 3 : type == 0x23 ? 4 : type == 0x28 ? 2 : 0;
             if (!length || offset + length > (size_t) count) return 0;
             if (type == 2) {
                 bool paused = packet[offset + 1] & STATE_VIDEO_PAUSED;
+                bool recording = packet[offset + 1] & STATE_RECORDING;
                 atomic_store(&input->paused, paused);
+                atomic_store(&input->recording, recording);
                 input->blocked = packet[offset + 1] & STATE_BLOCKED;
+                input->mouse = !(packet[offset + 1] & STATE_MOUSE_PAUSED);
                 if (cancel_touch(input) != 0) return -1;
                 if (link_running(input->link)) {
                     uint8_t video[] = {0x25, paused ? 0 : 1};
                     if (link_send(input->link, video, sizeof(video)) != 0) return -1;
                 }
-            } else if (link_send(input->link, packet + offset, length) != 0) return -1;
+            } else if (type == 0x28) {
+                bool recording = packet[offset + 1] != 0;
+                atomic_store(&input->recording, recording);
+            } else if ((input->mouse || (type != 0x20 && type != 0x21 && type != 0x26)) &&
+                     link_send(input->link, packet + offset, length) != 0) return -1;
             offset += length;
         }
     }
@@ -456,6 +463,7 @@ static int flush_touch(struct input_state *input) {
     uint16_t other_x;
     uint16_t other_y;
     uint64_t now = milliseconds();
+    if (!input->mouse) return cancel_touch(input);
     for (int index = 0; index != CONTACTS; ++index) {
         if (!touch->contacts[index].active) continue;
         if (first < 0) first = index;
@@ -627,15 +635,19 @@ static void *input_loop(void *argument) {
 }
 
 int input_open(struct input_state *input, const char *config) {
-    *input = (struct input_state) {.blocked = true, .control = -1};
+    *input = (struct input_state) {.blocked = true, .mouse = true, .control = -1};
     if (open_inputs(&input->inputs) != 0 ||
-        cfg_control_path(input->control_path, sizeof(input->control_path), config) != 0 ||
-        (input->control = open_control(input->control_path)) < 0) {
+        cfg_control_path(input->control_path, sizeof(input->control_path), config) != 0) {
+        input_close(input);
+        return -1;
+    }
+    if ((input->control = open_control(input->control_path)) < 0) {
         input_close(input);
         return -1;
     }
     atomic_init(&input->view, 0);
     atomic_init(&input->paused, false);
+    atomic_init(&input->recording, false);
     return 0;
 }
 
@@ -669,4 +681,8 @@ int input_start(struct input_state *input, struct link *link, struct mode mode) 
 
 bool input_paused(const struct input_state *input) {
     return atomic_load(&input->paused);
+}
+
+bool input_recording(const struct input_state *input) {
+    return atomic_load(&input->recording);
 }

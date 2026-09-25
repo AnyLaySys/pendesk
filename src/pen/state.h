@@ -13,6 +13,8 @@ enum {
     MAX_FRAME = 32 * 1024 * 1024,
     STATE_BLOCKED = 1,
     STATE_VIDEO_PAUSED = 2,
+    STATE_MOUSE_PAUSED = 4,
+    STATE_RECORDING = 8,
     PROTOCOL_VERSION = 7,
     VIDEO_HEADER = 25,
     VIDEO_PAYLOAD = 1150,
@@ -100,8 +102,10 @@ struct input_state {
     struct mode video;
     atomic_uint_fast64_t view;
     atomic_bool paused;
+    atomic_bool recording;
     int control;
     bool blocked;
+    bool mouse;
     pthread_t thread;
     bool thread_started;
     char control_path[108];

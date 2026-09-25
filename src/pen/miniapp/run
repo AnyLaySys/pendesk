@@ -7,8 +7,8 @@ package=$(dirname "$slot")
 data="$package/data"
 config="$data/config"
 if [ "${1:-}" = input ]; then
-    chmod 755 "$bin/daemon"
-    exec "$bin/daemon" --input "$data/input.sock" "$2"
+    chmod 755 "$bin/pdd"
+    exec "$bin/pdd" --input "$data/input.sock" "$2"
 fi
 if [ "${1:-}" = files ]; then
     action=${2:-}
@@ -34,7 +34,7 @@ alive() {
     case "$pid" in ''|*[!0-9]*) return 1 ;; esac
     [ "$pid" -gt 1 ] && [ -r "/proc/$pid/stat" ] || return 1
     case "$1" in
-        "$data/daemon.pid") expected=daemon ;;
+        "$data/pdd.pid") expected=pdd ;;
         "$data/tailscaled.pid") expected=tailscaled ;;
         *) return 1 ;;
     esac
@@ -70,7 +70,7 @@ stop() {
 }
 network() {
     if alive "$data/tailscaled.pid" && ! ready; then
-        stop "$data/daemon.pid"
+        stop "$data/pdd.pid"
         stop "$data/tailscaled.pid"
     fi
     if ! alive "$data/tailscaled.pid"; then
@@ -95,7 +95,7 @@ initialize() {
         old=$(cat "$data/slot")
     fi
     if [ "$old" != "$slot" ]; then
-        stop "$data/daemon.pid"
+        stop "$data/pdd.pid"
         stop "$data/tailscaled.pid"
         rm -f "$data/tailscaled.sock"
     fi
@@ -110,7 +110,7 @@ initialize() {
         done
     fi
     printf '%s\n' "$slot" > "$data/slot"
-    chmod 755 "$bin/daemon" "$bin/tailscale" "$bin/tailscaled"
+    chmod 755 "$bin/pdd" "$bin/tailscale" "$bin/tailscaled"
     chmod 755 "$bin/adb-guard"
     /bin/setsid "$bin/adb-guard" "$data" < /dev/null > /dev/null 2>&1 &
 }
@@ -121,15 +121,17 @@ run() {
     network || :
     serve_adb
     [ -s "$config" ] || return 0
-    "$bin/daemon" --check-config "$config"
-    if ! alive "$data/daemon.pid"; then
-        rm -f "$data/daemon.pid"
-        /bin/setsid "$bin/daemon" --config "$config" < /dev/null > /dev/null 2>&1 &
-        echo $! > "$data/daemon.pid"
+    "$bin/pdd" --check-config "$config"
+    if ! alive "$data/pdd.pid"; then
+        rm -f "$data/pdd.pid"
+        /bin/setsid "$bin/pdd" --config "$config" < /dev/null > /dev/null 2>&1 &
+        echo $! > "$data/pdd.pid"
     fi
 }
 if [ "${1:-}" = stop ]; then
-    stop "$data/daemon.pid"
+    stop "$data/pdd.pid"
+    stop "$data/tailscaled.pid"
+    rm -f "$data/tailscaled.sock" "$data/input.sock"
     exit
 fi
 mkdir -p "$data"
@@ -155,8 +157,8 @@ case "${1:-}" in
         ;;
     configure)
         chmod 600 "$data/config.new"
-        "$bin/daemon" --check-config "$data/config.new"
-        stop "$data/daemon.pid"
+        "$bin/pdd" --check-config "$data/config.new"
+        stop "$data/pdd.pid"
         stop "$data/tailscaled.pid"
         mv "$data/config.new" "$config"
         run

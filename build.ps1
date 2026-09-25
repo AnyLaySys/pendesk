@@ -9,8 +9,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
-$build = Join-Path $root 'build'
-$target = Join-Path $build 'target'; $out = Join-Path $build 'out'
+$target = Join-Path $root 'build\target'; $out = Join-Path $root 'build\out'
 $penBuild = Join-Path $out 'pen'
 $penSource = Join-Path $root 'src\pen'; $miniAppSource = Join-Path $penSource 'miniapp'
 $hostExecutable = Join-Path $out 'pendesk.exe'
@@ -143,11 +142,10 @@ function Install-Package([string]$Package) {
     Write-Output 'Generic AMR installed. Existing runtime settings are retained; new devices need pairing and independent Tailscale authorization.'
 }
 
-function Build-Daemon {
-    New-Item -ItemType Directory -Force $penBuild | Out-Null
+function Build-Pdd {
     $penSourceWSL = ConvertTo-WSLPath $penSource
     $penBuildWSL = ConvertTo-WSLPath $penBuild
-    & wsl.exe --exec bash --noprofile --norc -c "aarch64-linux-gnu-gcc -std=c17 -O2 -Wall -Wextra -Werror -pthread -static '$penSourceWSL/daemon.c' '$penSourceWSL/cfg.c' '$penSourceWSL/io.c' '$penSourceWSL/link.c' '$penSourceWSL/input.c' '$penSourceWSL/video.c' '$penSourceWSL/audio.c' '$penSourceWSL/preview.c' '$penSourceWSL/files.c' -o '$penBuildWSL/daemon'"
+    & wsl.exe --exec bash --noprofile --norc -c "aarch64-linux-gnu-gcc -std=c17 -O2 -Wall -Wextra -Werror -pthread -static '$penSourceWSL/pdd.c' '$penSourceWSL/cfg.c' '$penSourceWSL/io.c' '$penSourceWSL/link.c' '$penSourceWSL/input.c' '$penSourceWSL/video.c' '$penSourceWSL/audio.c' '$penSourceWSL/mic.c' '$penSourceWSL/preview.c' '$penSourceWSL/files.c' -o '$penBuildWSL/pdd'"
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
@@ -217,7 +215,6 @@ function Build-MiniAppCode {
         [IO.File]::WriteAllText((Join-Path $stage 'index.js'), $index.Replace('__APPID__', $appID), [Text.UTF8Encoding]::new($false))
         $stageWSL = ConvertTo-WSLPath $stage
         $compilerWSL = ConvertTo-WSLPath $compiler
-    New-Item -ItemType Directory -Force $penBuild | Out-Null
     $penBuildWSL = ConvertTo-WSLPath $penBuild
     & wsl.exe --exec bash --noprofile --norc -c "'$compilerWSL' '$stageWSL/app.js' '$penBuildWSL/app.js.bin' && '$compilerWSL' '$stageWSL/index.js' '$penBuildWSL/index.js.bin' module"
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -230,7 +227,9 @@ function Build {
     New-Item -ItemType Directory -Force $target, $penBuild, $out | Out-Null
     & cargo build --release --target-dir $target --manifest-path (Join-Path $root 'Cargo.toml')
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    Build-Daemon
+    try { Copy-Item -LiteralPath (Join-Path $target 'release\pendesk.exe') -Destination $hostExecutable -Force -ErrorAction Stop }
+    catch { Write-Warning 'Host pendesk.exe is in use (running); skipped host copy. Pen package still builds.' }
+    Build-Pdd
     Fetch-Tailscale
     Build-MiniAppCode
     Build-Package $package
@@ -267,6 +266,9 @@ function Build-Package([string]$Output) {
         (Join-Path $miniAppSource 'file.png'),
         (Join-Path $miniAppSource 'folder.png'),
         (Join-Path $miniAppSource 'kb.png'),
+        (Join-Path $miniAppSource 'mic.png'),
+        (Join-Path $miniAppSource 'mouse.png'),
+        (Join-Path $miniAppSource 'view.png'),
         (Join-Path $miniAppSource 'sound.png')
     )
     $requiredFiles = $miniAppFiles + $miniAppIcons + @(
@@ -274,7 +276,7 @@ function Build-Package([string]$Output) {
         (Join-Path $miniAppSource 'adb-guard'),
         (Join-Path $penBuild 'app.js.bin'),
         (Join-Path $penBuild 'index.js.bin'),
-        (Join-Path $penBuild 'daemon'),
+        (Join-Path $penBuild 'pdd'),
         (Join-Path $penBuild 'tailscale'),
         (Join-Path $penBuild 'tailscaled')
     )
@@ -288,7 +290,7 @@ function Build-Package([string]$Output) {
         Copy-Item (Join-Path $miniAppSource 'adb-guard') -Destination (Join-Path $stage 'bin\adb-guard')
         Copy-Item (Join-Path $penBuild 'app.js.bin') -Destination $stage
         Copy-Item (Join-Path $penBuild 'index.js.bin') -Destination $stage
-        Copy-Item (Join-Path $penBuild 'daemon') -Destination (Join-Path $stage 'bin\daemon')
+        Copy-Item (Join-Path $penBuild 'pdd') -Destination (Join-Path $stage 'bin\pdd')
         Copy-Item (Join-Path $penBuild 'tailscale') -Destination (Join-Path $stage 'bin\tailscale')
         Copy-Item (Join-Path $penBuild 'tailscaled') -Destination (Join-Path $stage 'bin\tailscaled')
         $index = Get-Content (Join-Path $stage 'index.js') -Raw -Encoding UTF8
