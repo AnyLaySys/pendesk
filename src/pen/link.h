@@ -2,9 +2,36 @@
 #define LINK_H
 
 #include "cfg.h"
-#include "state.h"
+#include "input.h"
+#include "protocol.h"
 #include <stdbool.h>
+#include <pthread.h>
 #include <stddef.h>
+#include <stdatomic.h>
+#include <stdint.h>
+
+struct link {
+    int fd;
+    atomic_bool running;
+    pthread_mutex_t write_mutex;
+};
+struct video {
+    int association;
+    int fd;
+    uint8_t nonce[8];
+    uint8_t *frame;
+    size_t capacity;
+    uint8_t *fragments;
+    size_t fragments_capacity;
+    uint32_t sequence;
+    uint32_t length;
+    uint16_t fragment_count;
+    uint16_t fragments_received;
+    bool assembling;
+    bool has_sequence;
+    bool connected;
+    bool fresh;
+};
 
 void link_init(struct link *link);
 

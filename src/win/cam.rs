@@ -3,9 +3,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
+use crate::all::cam::Frame;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
+use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BeginPaint, BLACKNESS, DIB_RGB_COLORS, EndPaint,
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLACKNESS, BeginPaint, DIB_RGB_COLORS, EndPaint,
     PAINTSTRUCT, PatBlt, SRCCOPY, StretchDIBits,
 };
 use windows::Win32::Graphics::Imaging::{
@@ -17,15 +20,13 @@ use windows::Win32::System::Com::{
     CoUninitialize,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CS_HREDRAW, CS_VREDRAW, CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DispatchMessageW,
+    CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DispatchMessageW,
     GWLP_USERDATA, GetClientRect, GetWindowLongPtrW, IDC_ARROW, LoadCursorW, MSG, PM_REMOVE,
-    PostQuitMessage, RegisterClassW, SetWindowLongPtrW, SetWindowTextW, ShowWindow, SW_SHOW, TranslateMessage,
-    WNDCLASSW, WM_DESTROY, WM_ERASEBKGND, WM_NCCREATE, WM_PAINT, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    PostQuitMessage, RegisterClassW, SW_SHOW, SetWindowLongPtrW, SetWindowTextW, ShowWindow,
+    TranslateMessage, WM_DESTROY, WM_ERASEBKGND, WM_NCCREATE, WM_PAINT, WNDCLASSW,
+    WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
-use crate::all::cam::Frame;
-use std::time::{Duration, Instant};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
-use windows::core::{w, PCWSTR};
+use windows::core::{PCWSTR, w};
 
 struct Image {
     width: u32,
@@ -180,12 +181,9 @@ unsafe fn initialize_window() -> Result<(HWND, Box<WindowData>, IWICImagingFacto
         if RegisterClassW(&class) == 0 {
             return Err("could not register camera window".into());
         }
-        let factory: IWICImagingFactory = CoCreateInstance(
-            &CLSID_WICImagingFactory,
-            None,
-            CLSCTX_INPROC_SERVER,
-        )
-        .map_err(|error| error.to_string())?;
+        let factory: IWICImagingFactory =
+            CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)
+                .map_err(|error| error.to_string())?;
         let mut data = Box::new(WindowData { image: None });
         let hwnd = CreateWindowExW(
             Default::default(),
@@ -284,7 +282,9 @@ unsafe extern "system" fn window_proc(
 unsafe fn decode(factory: &IWICImagingFactory, jpeg: &[u8]) -> Result<Image, String> {
     unsafe {
         let stream = factory.CreateStream().map_err(|error| error.to_string())?;
-        stream.InitializeFromMemory(jpeg).map_err(|error| error.to_string())?;
+        stream
+            .InitializeFromMemory(jpeg)
+            .map_err(|error| error.to_string())?;
         let decoder = factory
             .CreateDecoderFromStream(&stream, std::ptr::null(), WICDecodeMetadataCacheOnLoad)
             .map_err(|error| error.to_string())?;
@@ -311,6 +311,10 @@ unsafe fn decode(factory: &IWICImagingFactory, jpeg: &[u8]) -> Result<Image, Str
         converter
             .CopyPixels(std::ptr::null(), width * 4, &mut pixels)
             .map_err(|error| error.to_string())?;
-        Ok(Image { width, height, pixels })
+        Ok(Image {
+            width,
+            height,
+            pixels,
+        })
     }
 }

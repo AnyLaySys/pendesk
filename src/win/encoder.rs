@@ -4,10 +4,12 @@ use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_ContainerFormatJpeg, GUID_WICPixelFormat24bppBGR,
     IWICImagingFactory, WICBitmapEncoderNoCache,
 };
+use windows::Win32::System::Com::StructuredStorage::{
+    CreateStreamOnHGlobal, IPropertyBag2, PROPBAG2,
+};
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, CoCreateInstance, STGC_DEFAULT, STREAM_SEEK_END, STREAM_SEEK_SET,
 };
-use windows::Win32::System::Com::StructuredStorage::{CreateStreamOnHGlobal, IPropertyBag2, PROPBAG2};
 use windows::Win32::System::Ole::PROPBAG2_TYPE_DATA;
 use windows::Win32::System::Variant::{VARIANT, VT_R4};
 use windows::core::{Error, Result};
@@ -30,8 +32,13 @@ impl Jpeg {
         }
         output.clear();
         unsafe {
-            let stream = CreateStreamOnHGlobal(windows::Win32::Foundation::HGLOBAL(std::ptr::null_mut()), true)?;
-            let encoder = self.factory.CreateEncoder(&GUID_ContainerFormatJpeg, std::ptr::null())?;
+            let stream = CreateStreamOnHGlobal(
+                windows::Win32::Foundation::HGLOBAL(std::ptr::null_mut()),
+                true,
+            )?;
+            let encoder = self
+                .factory
+                .CreateEncoder(&GUID_ContainerFormatJpeg, std::ptr::null())?;
             encoder.Initialize(&stream, WICBitmapEncoderNoCache)?;
             let mut frame_encode = None;
             let mut options: Option<IPropertyBag2> = None;

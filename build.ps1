@@ -145,7 +145,7 @@ function Install-Package([string]$Package) {
 function Build-Pdd {
     $penSourceWSL = ConvertTo-WSLPath $penSource
     $penBuildWSL = ConvertTo-WSLPath $penBuild
-    & wsl.exe --exec bash --noprofile --norc -c "aarch64-linux-gnu-gcc -std=c17 -O2 -Wall -Wextra -Werror -pthread -static '$penSourceWSL/pdd.c' '$penSourceWSL/cfg.c' '$penSourceWSL/io.c' '$penSourceWSL/link.c' '$penSourceWSL/input.c' '$penSourceWSL/video.c' '$penSourceWSL/cam.c' '$penSourceWSL/audio.c' '$penSourceWSL/mic.c' '$penSourceWSL/preview.c' '$penSourceWSL/files.c' -o '$penBuildWSL/pdd'"
+    & wsl.exe --exec bash --noprofile --norc -c "aarch64-linux-gnu-gcc -std=c17 -O2 -Wall -Wextra -Werror -pthread -static '$penSourceWSL/pdd.c' '$penSourceWSL/cfg.c' '$penSourceWSL/io.c' '$penSourceWSL/link.c' '$penSourceWSL/input.c' '$penSourceWSL/input_control.c' '$penSourceWSL/input_devices.c' '$penSourceWSL/input_touch.c' '$penSourceWSL/video.c' '$penSourceWSL/media_receive.c' '$penSourceWSL/cam_device.c' '$penSourceWSL/cam_stream.c' '$penSourceWSL/audio.c' '$penSourceWSL/mic.c' '$penSourceWSL/preview.c' '$penSourceWSL/files.c' '$penSourceWSL/files_transport.c' '$penSourceWSL/files_panel.c' '$penSourceWSL/files_transfer.c' -o '$penBuildWSL/pdd'"
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 

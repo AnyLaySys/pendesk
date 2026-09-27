@@ -42,8 +42,8 @@ static int recording_file(char *path, size_t size) {
     for (;;) {
         if (!localtime_r(&seconds, &local) ||
             !strftime(timestamp, sizeof(timestamp), "%Y%m%d_%H%M%S", &local) ||
-            snprintf(path, size, "/userdisk/PenDesk/Audio/%s_%03d.flac", timestamp,
-                     milliseconds) >= (int) size)
+            snprintf(path, size, "/userdisk/PenDesk/Audio/%s_%03d.flac", timestamp, milliseconds) >=
+            (int) size)
             return -1;
         int fd = open(path, O_CREAT | O_EXCL | O_WRONLY, 0600);
         if (fd >= 0) {
@@ -64,7 +64,8 @@ void mic_init(struct microphone *microphone, const uint8_t nonce[8]) {
 }
 
 int mic_start(struct microphone *microphone) {
-    struct sockaddr_in address = {.sin_family = AF_INET, .sin_addr = {.s_addr = htonl(INADDR_LOOPBACK)}};
+    struct sockaddr_in address = {.sin_family = AF_INET, .sin_addr = {.s_addr = htonl(
+            INADDR_LOOPBACK)}};
     socklen_t address_length = sizeof(address);
     char port[8];
     char port_arg[16];
@@ -100,19 +101,19 @@ int mic_start(struct microphone *microphone) {
         return -1;
     }
     if (!process) {
-        execl("/usr/bin/gst-launch-1.0", "gst-launch-1.0", "-e", "-q", "alsasrc", "device=mic_and_ref",
-              "do-timestamp=true", "buffer-time=20000", "latency-time=10000", "!",
-              "audio/x-raw,format=S32LE,rate=96000,channels=2", "!", "audioconvert",
+        execl("/usr/bin/gst-launch-1.0", "gst-launch-1.0", "-e", "-q", "alsasrc",
+              "device=mic_and_ref", "do-timestamp=true", "buffer-time=20000", "latency-time=10000",
+              "!", "audio/x-raw,format=S32LE,rate=96000,channels=2", "!", "audioconvert",
               "mix-matrix=< <(float)1.0, (float)0.0> >", "!",
-              "audio/x-raw,format=S32LE,rate=96000,channels=1", "!", "audioresample", "quality=10", "!",
-              "audio/x-raw,format=S32LE,rate=16000,channels=1", "!", "tee", "name=audio",
+              "audio/x-raw,format=S32LE,rate=96000,channels=1", "!", "audioresample", "quality=10",
+              "!", "audio/x-raw,format=S32LE,rate=16000,channels=1", "!", "tee", "name=audio",
               "audio.", "!", "queue", "!", "audioconvert", "!",
               "audio/x-raw,format=S24LE,rate=16000,channels=1", "!", "flacenc", "!", "filesink",
-              file_arg, "audio.", "!", "queue", "!",
-              "audioconvert", "!", "audio/x-raw,format=S16LE,rate=16000,channels=1", "!",
-              "opusenc", "bitrate=256000", "frame-size=20", "audio-type=generic", "complexity=10",
-              "bandwidth=wideband", "!", "rtpopuspay", "pt=111", "mtu=1200", "!",
-              "udpsink", "host=127.0.0.1", port_arg, "sync=false", "async=false", (char *) NULL);
+              file_arg, "audio.", "!", "queue", "!", "audioconvert", "!",
+              "audio/x-raw,format=S16LE,rate=16000,channels=1", "!", "opusenc", "bitrate=256000",
+              "frame-size=20", "audio-type=generic", "complexity=10", "bandwidth=wideband", "!",
+              "rtpopuspay", "pt=111", "mtu=1200", "!", "udpsink", "host=127.0.0.1", port_arg,
+              "sync=false", "async=false", (char *) NULL);
         _exit(127);
     }
     microphone->fd = fd;
@@ -121,7 +122,8 @@ int mic_start(struct microphone *microphone) {
 }
 
 int mic_running(struct microphone *microphone) {
-    if (microphone->process <= 0 || waitpid(microphone->process, NULL, WNOHANG) != microphone->process)
+    if (microphone->process <= 0 ||
+        waitpid(microphone->process, NULL, WNOHANG) != microphone->process)
         return microphone->process > 0;
     close(microphone->fd);
     microphone->fd = -1;
@@ -143,8 +145,9 @@ void mic_stop(struct microphone *microphone) {
     mixer(false);
 }
 
-static int mic_send(const struct video *video, const struct cfg *cfg, bool recording,
-                    const uint8_t *payload, size_t length) {
+static int
+mic_send(const struct video *video, const struct cfg *cfg, bool recording, const uint8_t *payload,
+         size_t length) {
     uint8_t packet[10 + 14 + 1200];
     struct in_addr host;
     uint16_t port = htons(cfg->port);
@@ -175,7 +178,8 @@ int mic_forward(struct microphone *microphone, const struct video *video, const 
             return errno == EAGAIN || errno == EWOULDBLOCK ? 0 : -1;
         }
         if (!length) continue;
-        if (mic_send(video, cfg, true, packet, (size_t) length) != 0 &&
-            errno != EAGAIN && errno != EWOULDBLOCK) return -1;
+        if (mic_send(video, cfg, true, packet, (size_t) length) != 0 && errno != EAGAIN &&
+            errno != EWOULDBLOCK)
+            return -1;
     }
 }

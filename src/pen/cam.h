@@ -2,7 +2,15 @@
 #define CAM_H
 
 #include "cfg.h"
-#include "state.h"
+#include "link.h"
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <sys/types.h>
+
+enum {
+    CAMERA_MAX_FRAME = 8 * 1024 * 1024
+};
 
 struct camera {
     int fd;
@@ -17,9 +25,13 @@ struct camera {
 };
 
 void cam_init(struct camera *camera);
+
 int cam_start(struct camera *camera, const struct cfg *cfg);
+
 int cam_running(struct camera *camera);
+
 void cam_stop(struct camera *camera);
+
 int cam_forward(struct camera *camera, const struct video *video, const struct cfg *cfg);
 
 #endif

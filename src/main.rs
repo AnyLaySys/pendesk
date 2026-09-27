@@ -1,10 +1,10 @@
 mod all;
 #[path = "win/audio.rs"]
 mod audio;
-#[path = "win/cfg.rs"]
-mod cfg;
 #[path = "win/cam.rs"]
 mod cam;
+#[path = "win/cfg.rs"]
+mod cfg;
 #[path = "win/elevation.rs"]
 mod elevation;
 #[path = "win/encoder.rs"]
@@ -15,6 +15,8 @@ mod files;
 mod gpu;
 #[path = "win/input.rs"]
 mod input;
+#[path = "win/media.rs"]
+mod media;
 #[path = "win/mic.rs"]
 mod mic;
 #[path = "win/runtime.rs"]
@@ -23,6 +25,14 @@ mod runtime;
 mod screen;
 #[path = "win/server.rs"]
 mod server;
+#[path = "win/session.rs"]
+mod session;
+#[path = "win/signal.rs"]
+mod signal;
+#[path = "win/startup.rs"]
+mod startup;
+#[path = "win/viewport.rs"]
+mod viewport;
 fn main() {
     unsafe {
         let _ = windows::Win32::System::Com::CoInitializeEx(

@@ -140,7 +140,8 @@ static void *serve(void *argument) {
 }
 
 int preview_open(struct preview *preview, const struct cfg *cfg) {
-    *preview = (struct preview) {.mutex = PTHREAD_MUTEX_INITIALIZER, .listener = -1, .event = {-1, -1}};
+    *preview = (struct preview) {.mutex = PTHREAD_MUTEX_INITIALIZER, .listener = -1, .event = {-1,
+                                                                                               -1}};
     preview->files = files_new(cfg->host, cfg->port, cfg->socks_host, cfg->socks_port, cfg->token);
     if (!preview->files || pipe2(preview->event, O_CLOEXEC | O_NONBLOCK) != 0 ||
         (preview->listener = listener()) < 0 ||

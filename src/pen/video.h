@@ -2,7 +2,9 @@
 #define VIDEO_H
 
 #include "cfg.h"
-#include "state.h"
+#include "input.h"
+#include "link.h"
+#include "preview.h"
 
 void video_receive(struct input_state *input, struct preview *preview, struct video *video,
                    const struct cfg *cfg);

@@ -2,27 +2,19 @@ use crate::all::args::{self, Command, Config};
 use crate::cfg;
 use crate::elevation;
 use crate::server;
-use std::mem::size_of;
-use std::os::windows::ffi::OsStrExt;
-use std::slice;
+use crate::startup;
 use std::thread;
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, GetLastError, HANDLE, WAIT_OBJECT_0,
-};
-use windows::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey,
-    RegCreateKeyExW, RegDeleteValueW, RegOpenKeyExW, RegSetValueExW,
+    CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, WAIT_OBJECT_0,
 };
 use windows::Win32::System::Threading::{
     CreateEventW, CreateMutexW, EVENT_MODIFY_STATE, OpenEventW, ResetEvent, SetEvent,
     WaitForSingleObject,
 };
-use windows::core::{PCWSTR, w};
+use windows::core::w;
 const HOST: windows::core::PCWSTR = w!("Local\\PenDeskHost");
 const STOP: windows::core::PCWSTR = w!("Local\\PenDeskStop");
-const RUN: windows::core::PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-const NAME: windows::core::PCWSTR = w!("PenDesk");
 pub fn dispatch() -> Result<(), String> {
     match args::parse()? {
         Command::Run { config, wait } => run(config, wait),
@@ -68,11 +60,7 @@ pub fn stop() -> Result<(), String> {
     result.map_err(|error| error.to_string())
 }
 pub fn startup(enabled: bool) -> Result<(), String> {
-    if enabled {
-        enable_startup()
-    } else {
-        disable_startup()
-    }
+    startup::set(enabled)
 }
 struct Instance(HANDLE);
 impl Instance {
@@ -122,59 +110,4 @@ impl Drop for Stop {
             let _ = CloseHandle(self.0);
         }
     }
-}
-fn enable_startup() -> Result<(), String> {
-    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-    let mut command = vec![b'"' as u16];
-    command.extend(executable.as_os_str().encode_wide());
-    command.extend("\" run".encode_utf16());
-    command.push(0);
-    let data = unsafe {
-        slice::from_raw_parts(
-            command.as_ptr().cast::<u8>(),
-            command.len() * size_of::<u16>(),
-        )
-    };
-    let key = open_run_key()?;
-    let result = unsafe { RegSetValueExW(key, NAME, None, REG_SZ, Some(data)) };
-    unsafe {
-        let _ = RegCloseKey(key);
-    }
-    result.ok().map_err(|error| error.to_string())
-}
-fn disable_startup() -> Result<(), String> {
-    let mut key = HKEY::default();
-    let result = unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, RUN, None, KEY_SET_VALUE, &mut key) };
-    if result == ERROR_FILE_NOT_FOUND {
-        return Ok(());
-    }
-    result.ok().map_err(|error| error.to_string())?;
-    let result = unsafe { RegDeleteValueW(key, NAME) };
-    unsafe {
-        let _ = RegCloseKey(key);
-    }
-    if result == ERROR_FILE_NOT_FOUND {
-        Ok(())
-    } else {
-        result.ok().map_err(|error| error.to_string())
-    }
-}
-fn open_run_key() -> Result<HKEY, String> {
-    let mut key = HKEY::default();
-    unsafe {
-        RegCreateKeyExW(
-            HKEY_CURRENT_USER,
-            RUN,
-            None,
-            PCWSTR::null(),
-            REG_OPTION_NON_VOLATILE,
-            KEY_SET_VALUE,
-            None,
-            &mut key,
-            None,
-        )
-    }
-    .ok()
-    .map_err(|error| error.to_string())?;
-    Ok(key)
 }
