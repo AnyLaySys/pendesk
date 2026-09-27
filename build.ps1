@@ -2,7 +2,7 @@ param(
     [Parameter(Position = 0)][ValidateSet('build', 'install', 'configure')][string]$action = 'build',
     [string]$authkey,
     [string]$hostaddress,
-    [ValidateRange(1, 65535)][int]$port = 7193,
+    [ValidateRange(1, 65535)][int]$port = 999,
     [string]$serial,
     [string]$token
 )
@@ -145,7 +145,7 @@ function Install-Package([string]$Package) {
 function Build-Pdd {
     $penSourceWSL = ConvertTo-WSLPath $penSource
     $penBuildWSL = ConvertTo-WSLPath $penBuild
-    & wsl.exe --exec bash --noprofile --norc -c "aarch64-linux-gnu-gcc -std=c17 -O2 -Wall -Wextra -Werror -pthread -static '$penSourceWSL/pdd.c' '$penSourceWSL/cfg.c' '$penSourceWSL/io.c' '$penSourceWSL/link.c' '$penSourceWSL/input.c' '$penSourceWSL/video.c' '$penSourceWSL/audio.c' '$penSourceWSL/mic.c' '$penSourceWSL/preview.c' '$penSourceWSL/files.c' -o '$penBuildWSL/pdd'"
+    & wsl.exe --exec bash --noprofile --norc -c "aarch64-linux-gnu-gcc -std=c17 -O2 -Wall -Wextra -Werror -pthread -static '$penSourceWSL/pdd.c' '$penSourceWSL/cfg.c' '$penSourceWSL/io.c' '$penSourceWSL/link.c' '$penSourceWSL/input.c' '$penSourceWSL/video.c' '$penSourceWSL/cam.c' '$penSourceWSL/audio.c' '$penSourceWSL/mic.c' '$penSourceWSL/preview.c' '$penSourceWSL/files.c' -o '$penBuildWSL/pdd'"
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
@@ -224,15 +224,17 @@ function Build-MiniAppCode {
 }
 
 function Build {
+    Start-Process taskkill.exe -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '/F', '/IM', 'pendesk.exe'
     New-Item -ItemType Directory -Force $target, $penBuild, $out | Out-Null
     & cargo build --release --target-dir $target --manifest-path (Join-Path $root 'Cargo.toml')
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    try { Copy-Item -LiteralPath (Join-Path $target 'release\pendesk.exe') -Destination $hostExecutable -Force -ErrorAction Stop }
-    catch { Write-Warning 'Host pendesk.exe is in use (running); skipped host copy. Pen package still builds.' }
+    Copy-Item -LiteralPath (Join-Path $target 'release\pendesk.exe') -Destination $hostExecutable -Force
     Build-Pdd
     Fetch-Tailscale
     Build-MiniAppCode
     Build-Package $package
+    & $hostExecutable restart
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
 function New-AMR([string]$Source, [string]$Destination) {
@@ -263,6 +265,7 @@ function Build-Package([string]$Output) {
     )
     $miniAppIcons = @(
         (Join-Path $miniAppSource 'back.png'),
+        (Join-Path $miniAppSource 'cam.png'),
         (Join-Path $miniAppSource 'file.png'),
         (Join-Path $miniAppSource 'folder.png'),
         (Join-Path $miniAppSource 'kb.png'),
@@ -326,7 +329,7 @@ function Configure {
     $config = Join-Path $state 'active-config'
     $previous = if ($localHost -and (Test-Path -LiteralPath $config)) { ConvertFrom-StringData (Get-Content -LiteralPath $config -Raw) } else { @{} }
     if (!$token -and $previous.token) { $token = $previous.token }
-    if (!$portSpecified -and $previous.port) { $port = [int]$previous.port }
+    if (!$portSpecified -and $previous.port -and [int]$previous.port -ne 7193) { $port = [int]$previous.port }
     if (!$token) {
         $bytes = [byte[]]::new(32)
         $random = [Security.Cryptography.RandomNumberGenerator]::Create()

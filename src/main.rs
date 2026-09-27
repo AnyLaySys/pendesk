@@ -3,6 +3,8 @@ mod all;
 mod audio;
 #[path = "win/cfg.rs"]
 mod cfg;
+#[path = "win/cam.rs"]
+mod cam;
 #[path = "win/elevation.rs"]
 mod elevation;
 #[path = "win/encoder.rs"]

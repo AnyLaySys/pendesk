@@ -421,11 +421,13 @@ static int read_control(struct input_state *input) {
             uint8_t type = packet[offset];
             size_t length =
                     type == 2 || type == 0x27 ? 2 : type == 0x20 ? 5 : type == 0x21 ||
-                    type == 0x26 ? 3 : type == 0x23 ? 4 : type == 0x28 ? 2 : 0;
+                    type == 0x26 ? 3 : type == 0x23 ? 4 :
+                    type == 0x28 || type == 0x29 ? 2 : 0;
             if (!length || offset + length > (size_t) count) return 0;
             if (type == 2) {
                 bool paused = packet[offset + 1] & STATE_VIDEO_PAUSED;
-                bool recording = packet[offset + 1] & STATE_RECORDING;
+                bool recording = atomic_load(&input->camera) ||
+                                 (packet[offset + 1] & STATE_RECORDING);
                 atomic_store(&input->paused, paused);
                 atomic_store(&input->recording, recording);
                 input->blocked = packet[offset + 1] & STATE_BLOCKED;
@@ -436,8 +438,13 @@ static int read_control(struct input_state *input) {
                     if (link_send(input->link, video, sizeof(video)) != 0) return -1;
                 }
             } else if (type == 0x28) {
-                bool recording = packet[offset + 1] != 0;
+                bool recording = packet[offset + 1] != 0 || atomic_load(&input->camera);
                 atomic_store(&input->recording, recording);
+            } else if (type == 0x29) {
+                bool camera = packet[offset + 1] != 0;
+                atomic_store(&input->camera, camera);
+                atomic_store(&input->recording, camera);
+                if (link_send(input->link, packet + offset, length) != 0) return -1;
             } else if ((input->mouse || (type != 0x20 && type != 0x21 && type != 0x26)) &&
                      link_send(input->link, packet + offset, length) != 0) return -1;
             offset += length;
@@ -648,7 +655,12 @@ int input_open(struct input_state *input, const char *config) {
     atomic_init(&input->view, 0);
     atomic_init(&input->paused, false);
     atomic_init(&input->recording, false);
+    atomic_init(&input->camera, false);
     return 0;
+}
+
+bool input_camera(const struct input_state *input) {
+    return atomic_load(&input->camera);
 }
 
 void input_stop(struct input_state *input) {

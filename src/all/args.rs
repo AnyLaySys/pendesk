@@ -73,7 +73,7 @@ pub fn stored(text: &str) -> Result<Config, String> {
 fn parse_config(mut arguments: impl Iterator<Item = String>) -> Result<Config, String> {
     let mut fps = 60;
     let mut quality = 80;
-    let mut port = 7193;
+    let mut port = 999;
     let mut pairing_token = None;
     while let Some(option) = arguments.next() {
         match option.as_str() {

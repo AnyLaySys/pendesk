@@ -14,7 +14,7 @@ const STATE_MOUSE_PAUSED = 4;
 const STATE_RECORDING = 8;
 const FONT = "Google Sans Flex";
 const icons = {
-  screen: "view.png", mouse: "mouse.png", keyboard: "kb.png", mic: "mic.png", folder: "folder.png", file: "file.png", back: "back.png", sound: "sound.png"
+  screen: "view.png", mouse: "mouse.png", keyboard: "kb.png", mic: "mic.png", camera: "cam.png", folder: "folder.png", file: "file.png", back: "back.png", sound: "sound.png"
 };
 
 function control(bytes, ordered = false) {
@@ -85,7 +85,7 @@ const script = {
       state(false, false);
     } catch {}
     return {
-      active: true, ready: false, frame: Date.now(), job: null, guard: null, view: "desktop", pad: null, held: [], fileTouch: null, fileScrolled: false, audioOn: false, screenOn: true, mouseOn: true, micOn: false,
+      active: true, ready: false, frame: Date.now(), job: null, guard: null, view: "desktop", pad: null, held: [], fileTouch: null, fileScrolled: false, audioOn: false, screenOn: true, mouseOn: true, micOn: false, cameraOn: false,
       fileState: { pen: [], windows: [], transfer: 0, progress: 0 }, fileOffset: { pen: 0, windows: 0 }, fileWatch: null,
       caps: false, modifiers: { Shift: false, Ctrl: false, Win: false, Alt: false }
     };
@@ -142,6 +142,7 @@ const script = {
       this.ready = false;
       this.view = "desktop";
       this.audioOn = false;
+      if (this.cameraOn) { this.cameraOn = false; control([0x29, 0], true); }
       if (this.micOn) { this.micOn = false; control([0x28, 0], true); }
       this.cancelFrame();
       this.finishPad(false);
@@ -155,12 +156,20 @@ const script = {
       control([0x27, this.audioOn ? 1 : 0]);
     },
     toggleMic() {
+      if (this.cameraOn) return;
       this.micOn = !this.micOn;
       if (this.micOn && this.audioOn) {
         this.audioOn = false;
         control([0x27, 0]);
       }
       control([0x28, this.micOn ? 1 : 0], true);
+      state(true, true, true, this.micOn);
+    },
+    toggleCamera() {
+      this.cameraOn = !this.cameraOn;
+      this.micOn = this.cameraOn;
+      control([0x28, this.micOn ? 1 : 0], true);
+      control([0x29, this.cameraOn ? 1 : 0], true);
       state(true, true, true, this.micOn);
     },
     toggleScreen() {
@@ -459,20 +468,16 @@ const style = {
     root: { width: "100%", height: "100%", position: "relative" },
     font: { fontFamily: FONT },
     desktop: { width: "100%", height: "100%", position: "absolute", top: 0, left: 0 },
-    toolToggle: { position: "absolute", bottom: 8, right: 8, width: 27, height: 27, borderRadius: 14, backgroundColor: "#0078d4" },
+    toolToggle: { position: "absolute", bottom: 9, right: 9, width: 27, height: 27, borderRadius: 14, backgroundColor: "transparent" },
     tools: { width: "100%", height: "100%", position: "relative" },
-    toolItem: { position: "absolute", top: 9, width: 130, height: 27, flexDirection: "row", alignItems: "center", backgroundColor: "#191B21", borderRadius: 3 },
-    toolScreen: { left: 48 },
-    toolMouse: { left: 188 },
-    toolKeyboard: { left: 328 },
-    toolMic: { left: 468 },
-    toolSound: { left: 608 },
-    toolFiles: { left: 748 },
-    toolText: { color: "#d9e1e8", fontSize: 18, lineHeight: "27px" },
+    toolRail: { position: "absolute", top: 9, left: 45, right: 58, height: 27, flexDirection: "row" },
+    toolItem: { position: "relative", height: 27, flex: 1, marginRight: 3, flexDirection: "row", alignItems: "center", backgroundColor: "#191B21", borderRadius: 3 },
+    toolEmpty: { marginRight: 0, backgroundColor: "transparent" },
+    toolText: { position: "absolute", top: 0, left: 0, right: 0, height: 27, color: "#d9e1e8", fontSize: 18, lineHeight: "27px", textAlign: "center" },
     toolTextOn: { color: "#0078d4" },
     toolBack: { position: "absolute", top: 9, left: 9, width: 27, height: 27, alignItems: "center", justifyContent: "center" },
     toolBackIcon: { width: 27, height: 27 },
-    toolItemIcon: { width: 27, height: 27, marginLeft: 8, marginRight: 12 },
+    toolItemIcon: { width: 27, height: 27, marginLeft: 3 },
     keyboard: { position: "absolute", bottom: 0, left: 0, width: "100%", height: "100%" },
     keyArea: { position: "absolute", top: 0, left: 126, width: 684, height: "100%", flexDirection: "column" },
     touchPad: { position: "absolute", top: 0, width: 126, height: "100%", backgroundColor: "transparent" },
@@ -552,6 +557,8 @@ const render = function () {
   }
   if (this.view === "tools") {
     return create("div", { staticClass: ["tools"] }, [
+      toolBack(() => this.showDesktop()),
+      create("div", { staticClass: ["toolRail"] }, [
       create("div", { staticClass: ["toolItem", "toolScreen"], on: { click: () => this.toggleScreen() } }, [
         icon(icons.screen, ["toolItemIcon"]),
         text("显示", ["toolText"].concat(this.screenOn ? ["toolTextOn"] : []))
@@ -563,6 +570,10 @@ const render = function () {
       create("div", { staticClass: ["toolItem", "toolKeyboard"], on: { click: () => this.showKeyboard() } }, [
         icon(icons.keyboard, ["toolItemIcon"]),
         text("键盘", ["toolText"])
+      ]),
+      create("div", { staticClass: ["toolItem", "toolCamera"], on: { click: () => this.toggleCamera() } }, [
+        icon(icons.camera, ["toolItemIcon"]),
+        text("录像", ["toolText"].concat(this.cameraOn ? ["toolTextOn"] : []))
       ]),
       create("div", { staticClass: ["toolItem", "toolMic"], on: { click: () => this.toggleMic() } }, [
         icon(icons.mic, ["toolItemIcon"]),
@@ -576,7 +587,8 @@ const render = function () {
         icon(icons.folder, ["toolItemIcon"]),
         text("文件", ["toolText"])
       ]),
-      toolBack(() => this.showDesktop())
+      create("div", { staticClass: ["toolItem", "toolEmpty"] }),
+      ])
     ]);
   }
   if (this.view === "keyboard") {

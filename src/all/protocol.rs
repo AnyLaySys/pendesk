@@ -11,6 +11,7 @@ const ZOOM: u8 = 0x24;
 const VIDEO: u8 = 0x25;
 const WHEEL: u8 = 0x26;
 const AUDIO_TOGGLE: u8 = 0x27;
+const CAMERA_TOGGLE: u8 = 0x29;
 #[derive(Clone, Copy)]
 pub struct Video {
     pub width: u16,
@@ -36,6 +37,7 @@ pub enum Input {
     Video(bool),
     Wheel(i16),
     Audio(bool),
+    Camera(bool),
 }
 pub fn authenticate_with_magic(
     stream: &mut TcpStream,
@@ -117,6 +119,18 @@ pub fn read_input(stream: &mut TcpStream) -> io::Result<Input> {
             let mut state = [0];
             stream.read_exact(&mut state)?;
             Ok(Input::Audio(state[0] != 0))
+        }
+        CAMERA_TOGGLE => {
+            let mut state = [0];
+            stream.read_exact(&mut state)?;
+            match state[0] {
+                0 => Ok(Input::Camera(false)),
+                1 => Ok(Input::Camera(true)),
+                _ => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid camera state",
+                )),
+            }
         }
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidData,

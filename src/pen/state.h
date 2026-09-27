@@ -103,6 +103,7 @@ struct input_state {
     atomic_uint_fast64_t view;
     atomic_bool paused;
     atomic_bool recording;
+    atomic_bool camera;
     int control;
     bool blocked;
     bool mouse;

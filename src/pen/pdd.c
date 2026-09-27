@@ -61,7 +61,9 @@ int main(int argc, char **argv) {
                 link_start(&link);
                 if (input_start(&input, &link, mode) == 0) {
                     uint8_t state[] = {0x25, input_paused(&input) ? 0 : 1};
-                    if (link_send(&link, state, sizeof(state)) == 0)
+                    uint8_t camera[] = {0x29, input_camera(&input) ? 1 : 0};
+                    if (link_send(&link, state, sizeof(state)) == 0 &&
+                        link_send(&link, camera, sizeof(camera)) == 0)
                         video_receive(&input, &preview, &video, &cfg);
                     input_stop(&input);
                 } else link_stop(&link);

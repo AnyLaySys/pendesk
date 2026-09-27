@@ -19,5 +19,6 @@ void input_set_view(struct input_state *input, struct view view);
 
 bool input_paused(const struct input_state *input);
 bool input_recording(const struct input_state *input);
+bool input_camera(const struct input_state *input);
 
 #endif

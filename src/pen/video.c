@@ -3,6 +3,7 @@
 
 #include "video.h"
 #include "audio.h"
+#include "cam.h"
 #include "input.h"
 #include "io.h"
 #include "link.h"
@@ -161,6 +162,7 @@ void video_receive(struct input_state *input, struct preview *preview, struct vi
                    const struct cfg *cfg) {
     struct link *link = input->link;
     struct audio audio;
+    struct camera camera;
     struct microphone microphone;
     uint8_t control[128];
     size_t control_length = 0;
@@ -168,8 +170,19 @@ void video_receive(struct input_state *input, struct preview *preview, struct vi
     bool configured = false;
     bool microphone_announced = false;
     audio_init(&audio);
+    cam_init(&camera);
     mic_init(&microphone, video->nonce);
     while (alive && link_running(link)) {
+        if (camera.process > 0 && !cam_running(&camera)) {
+            atomic_store(&input->camera, false);
+            atomic_store(&input->recording, false);
+        }
+        if (input_camera(input) && camera.process <= 0 &&
+            cam_start(&camera, cfg) != 0) {
+            atomic_store(&input->camera, false);
+            atomic_store(&input->recording, false);
+        }
+        if (!input_camera(input) && camera.process > 0) cam_stop(&camera);
         if (input_recording(input)) {
             if (microphone.process <= 0) {
                 if (mic_start(&microphone) == 0 && mic_state(video, cfg, true) == 0)
@@ -177,6 +190,10 @@ void video_receive(struct input_state *input, struct preview *preview, struct vi
                 else {
                     mic_stop(&microphone);
                     atomic_store(&input->recording, false);
+                    if (input_camera(input)) {
+                        atomic_store(&input->camera, false);
+                        cam_stop(&camera);
+                    }
                 }
             }
         } else if (microphone.process > 0) {
@@ -191,7 +208,8 @@ void video_receive(struct input_state *input, struct preview *preview, struct vi
         }
         struct pollfd events[] = {{.fd = link->fd, .events = POLLIN},
                                   {.fd = video->fd, .events = POLLIN},
-                                  {.fd = microphone.fd, .events = POLLIN}};
+                                  {.fd = microphone.fd, .events = POLLIN},
+                                  {.fd = camera.process > 0 ? camera.fd : -1, .events = POLLIN}};
         uint64_t now = milliseconds();
         int result;
         if (!video->connected && now >= next_hello) {
@@ -207,6 +225,7 @@ void video_receive(struct input_state *input, struct preview *preview, struct vi
             receive_packets(video, cfg, input, preview, &audio, configured) != 0)
             break;
         if (events[2].revents & POLLIN && mic_forward(&microphone, video, cfg) != 0) break;
+        if (events[3].revents & POLLIN && cam_forward(&camera, video, cfg) != 0) break;
         if (events[0].revents & POLLIN) {
             while (control_length < sizeof(control)) {
                 ssize_t length = read(link->fd, control + control_length,
@@ -235,5 +254,6 @@ void video_receive(struct input_state *input, struct preview *preview, struct vi
     done:
     if (microphone_announced) mic_state(video, cfg, false);
     mic_stop(&microphone);
+    cam_stop(&camera);
     audio_stop(&audio);
 }

@@ -3,6 +3,8 @@ use crate::all::files as all_files;
 use crate::all::protocol::{self, Input};
 use crate::all::server::{self as all_server, Backend};
 use crate::audio::Audio;
+use crate::all::cam::Receiver as CameraReceiver;
+use crate::cam::Window as CameraWindow;
 use crate::encoder::Jpeg;
 use crate::files::Disk;
 use crate::gpu::Gpu;
@@ -21,7 +23,7 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant};
 use windows::Win32::Networking::WinSock::{
-    FD_READ, SOCKET, SOL_SOCKET, SO_SNDBUF, WSAEVENT, WSACloseEvent, WSACreateEvent, WSAEventSelect,
+    FD_READ, SOCKET, SOL_SOCKET, SO_RCVBUF, SO_SNDBUF, WSAEVENT, WSACloseEvent, WSACreateEvent, WSAEventSelect,
     setsockopt,
 };
 struct MicSocket {
@@ -49,13 +51,20 @@ impl Drop for MicSocket {
 struct Windows;
 impl Backend for Windows {
     fn tune_video(&self, socket: &UdpSocket) {
-        let buffer = (4 * 1024 * 1024_i32).to_ne_bytes();
+        let send = (4 * 1024 * 1024_i32).to_ne_bytes();
+        let receive = (8 * 1024 * 1024_i32).to_ne_bytes();
         unsafe {
             let _ = setsockopt(
                 SOCKET(socket.as_raw_socket() as usize),
                 SOL_SOCKET,
                 SO_SNDBUF,
-                Some(&buffer),
+                Some(&send),
+            );
+            let _ = setsockopt(
+                SOCKET(socket.as_raw_socket() as usize),
+                SOL_SOCKET,
+                SO_RCVBUF,
+                Some(&receive),
             );
         }
     }
@@ -125,6 +134,7 @@ fn session(
     let mic_socket = MicSocket::new(SOCKET(video_socket.as_raw_socket() as usize))?;
     let active = Arc::new(AtomicBool::new(true));
     let video_active = Arc::new(AtomicBool::new(true));
+    let camera_active = Arc::new(AtomicBool::new(false));
     let audio_gate = Arc::new((Mutex::new(false), Condvar::new()));
     let audio_active = Arc::clone(&active);
     let audio_control = Arc::clone(&audio_gate);
@@ -162,6 +172,7 @@ fn session(
     });
     let input_active = Arc::clone(&active);
     let input_video = Arc::clone(&video_active);
+    let input_camera = Arc::clone(&camera_active);
     let input_viewport = Arc::clone(&viewport);
     let input_signal = Arc::clone(&signal);
     let input_gate = Arc::clone(&audio_gate);
@@ -212,6 +223,10 @@ fn session(
                     *lock.lock().unwrap() = enabled;
                     cond.notify_one();
                 }
+                Ok(Input::Camera(enabled)) => {
+                    input_camera.store(enabled, Ordering::Relaxed);
+                    input_signal.set();
+                }
                 _ => break,
             }
         }
@@ -236,12 +251,25 @@ fn session(
     let mut last_captured = 0u64;
     let mut last_sent = Instant::now() - keyframe;
     let mut playback = None;
+    let mut camera_receiver = CameraReceiver::default();
+    let mut camera_window = None;
     let result = (|| {
         while active.load(Ordering::Relaxed) {
+            if !camera_active.load(Ordering::Relaxed) {
+                camera_receiver.reset();
+                camera_window = None;
+            }
             if !video_active.load(Ordering::Relaxed) {
                 let ready = wait_socket(&signal, &mic_socket, 20);
                 let _ = ready;
-                receive_microphone(video_socket, peer, &mut playback);
+                receive_packets(
+                    video_socket,
+                    peer,
+                    &mut playback,
+                    camera_active.load(Ordering::Relaxed),
+                    &mut camera_receiver,
+                    &mut camera_window,
+                );
                 continue;
             }
             let since = last_sent.elapsed();
@@ -252,7 +280,14 @@ fn session(
                 wait_socket(&signal, &mic_socket, interval.as_millis() as u32)
             };
             let _ = ready;
-            receive_microphone(video_socket, peer, &mut playback);
+            receive_packets(
+                video_socket,
+                peer,
+                &mut playback,
+                camera_active.load(Ordering::Relaxed),
+                &mut camera_receiver,
+                &mut camera_window,
+            );
             if !active.load(Ordering::Relaxed)
                 || !video_active.load(Ordering::Relaxed)
                 || last_sent.elapsed() < interval
@@ -271,7 +306,14 @@ fn session(
                 None => {
                     let ready = wait_socket(&signal, &mic_socket, 20);
                     let _ = ready;
-                    receive_microphone(video_socket, peer, &mut playback);
+                    receive_packets(
+                        video_socket,
+                        peer,
+                        &mut playback,
+                        camera_active.load(Ordering::Relaxed),
+                        &mut camera_receiver,
+                        &mut camera_window,
+                    );
                     continue;
                 }
             };
@@ -303,31 +345,58 @@ fn wait_socket(signal: &Signal, socket: &MicSocket, milliseconds: u32) -> bool {
     signal.wait_socket(socket.socket, socket.event, milliseconds)
 }
 
-fn receive_microphone(socket: &UdpSocket, peer: all_server::VideoPeer, playback: &mut Option<Playback>) {
+fn receive_packets(
+    socket: &UdpSocket,
+    peer: all_server::VideoPeer,
+    playback: &mut Option<Playback>,
+    camera_active: bool,
+    camera_receiver: &mut CameraReceiver,
+    camera_window: &mut Option<CameraWindow>,
+) {
     let mut packet = [0; 1400];
     loop {
         match socket.recv_from(&mut packet) {
-            Ok((length, _address)) if length >= 14 && packet[..4] == *b"PDSM" && packet[4] == protocol::VERSION && packet[5..13] == peer.nonce => {
-                if packet[13] == 0 {
-                    *playback = None;
-                } else if packet[13] == 1 {
-                    if playback.is_none() {
-                        *playback = match Playback::new() {
-                            Ok(playback) => Some(playback),
-                            Err(error) => {
-                                eprintln!("{error}");
-                                None
-                            }
-                        };
-                    }
-                    if length > 14 {
-                        if let Some(player) = playback.as_mut() {
-                            if let Err(error) = player.packet(&packet[14..length]) {
-                                eprintln!("{error}");
-                                *playback = None;
-                            }
+            Ok((length, _address))
+                if length >= 14
+                    && packet[..4] == *b"PDSM"
+                    && packet[4] == protocol::VERSION
+                    && packet[5..13] == peer.nonce =>
+            {
+                match packet[13] {
+                    0 => *playback = None,
+                    1 => {
+                        if playback.is_none() {
+                            *playback = match Playback::new() {
+                                Ok(playback) => Some(playback),
+                                Err(error) => {
+                                    eprintln!("{error}");
+                                    None
+                                }
+                            };
+                        }
+                        if length > 14
+                            && let Some(player) = playback.as_mut()
+                            && let Err(error) = player.packet(&packet[14..length])
+                        {
+                            eprintln!("{error}");
+                            *playback = None;
                         }
                     }
+                    _ => {}
+                }
+            }
+            Ok((length, _address)) if camera_active && length >= 25 && packet[..4] == *b"PDSC" => {
+                if let Some(frame) = camera_receiver.push(&packet[..length], peer.nonce) {
+                    if camera_window.is_none() {
+                        *camera_window = CameraWindow::new().ok();
+                    }
+                    if camera_window
+                        .as_ref()
+                        .is_some_and(|window| window.frame(frame))
+                    {
+                        continue;
+                    }
+                    *camera_window = None;
                 }
             }
             Ok(_) => {}
