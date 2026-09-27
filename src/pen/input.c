@@ -44,7 +44,7 @@ static void *input_loop(void *argument) {
 }
 
 int input_open(struct input_state *input, const char *config) {
-    *input = (struct input_state) {.blocked = true, .mouse = true, .control = -1};
+    *input = (struct input_state) {.blocked = true, .mouse = false, .control = -1};
     if (input_devices_open(&input->inputs) != 0 ||
         cfg_control_path(input->control_path, sizeof(input->control_path), config) != 0) {
         input_close(input);
@@ -55,7 +55,7 @@ int input_open(struct input_state *input, const char *config) {
         return -1;
     }
     atomic_init(&input->view, 0);
-    atomic_init(&input->paused, false);
+    atomic_init(&input->paused, true);
     atomic_init(&input->recording, false);
     atomic_init(&input->camera, false);
     return 0;

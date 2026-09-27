@@ -28,9 +28,10 @@ static uint16_t read_u16(const uint8_t *source) {
 
 static int apply_control(struct input_state *input, struct audio *audio, const uint8_t packet[10]) {
     struct view view;
-    if (packet[0] == 0x11 && packet[1] == 5) {
-        audio_start(audio, (uint32_t) packet[2] << 24 | (uint32_t) packet[3] << 16 |
-                           (uint32_t) packet[4] << 8 | packet[5], packet[6]);
+    if (packet[0] == 0x11) {
+        if (packet[1] == 1) audio_start(audio);
+        else if (packet[1] == 0) audio_stop(audio);
+        else return -1;
         return 1;
     }
     if (packet[0] != 0x10 || packet[1] != 2) return -1;

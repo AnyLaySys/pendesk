@@ -266,13 +266,15 @@ function Build-Package([string]$Output) {
     $miniAppIcons = @(
         (Join-Path $miniAppSource 'back.png'),
         (Join-Path $miniAppSource 'cam.png'),
+        (Join-Path $miniAppSource 'close.png'),
         (Join-Path $miniAppSource 'file.png'),
         (Join-Path $miniAppSource 'folder.png'),
         (Join-Path $miniAppSource 'kb.png'),
         (Join-Path $miniAppSource 'mic.png'),
         (Join-Path $miniAppSource 'mouse.png'),
         (Join-Path $miniAppSource 'view.png'),
-        (Join-Path $miniAppSource 'sound.png')
+        (Join-Path $miniAppSource 'sound.png'),
+        (Join-Path $miniAppSource 'power.png')
     )
     $requiredFiles = $miniAppFiles + $miniAppIcons + @(
         (Join-Path $miniAppSource 'run'),

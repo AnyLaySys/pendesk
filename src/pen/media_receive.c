@@ -63,7 +63,7 @@ receive_packet(struct video *video, const struct cfg *cfg, const struct input_st
     size_t payload_length;
     size_t fragment_length;
     size_t offset;
-    if (length < 10 + AUDIO_HEADER || packet[0] || packet[1] || packet[2] || packet[3] != 1 ||
+    if (length < 10 + VIDEO_ACK_HEADER || packet[0] || packet[1] || packet[2] || packet[3] != 1 ||
         inet_pton(AF_INET, cfg->host, &host) != 1 || memcmp(packet + 4, &host, 4) ||
         read_u16(packet + 8) != cfg->port)
         return 0;
@@ -71,9 +71,14 @@ receive_packet(struct video *video, const struct cfg *cfg, const struct input_st
     payload_length = length - 10;
     if (payload[4] != PROTOCOL_VERSION || memcmp(payload + 5, video->nonce, sizeof(video->nonce)))
         return 0;
+    if (!memcmp(payload, "PDSH", 4)) {
+        if (payload_length == VIDEO_ACK_HEADER) video->connected = true;
+        return 0;
+    }
     if (!memcmp(payload, "PDSA", 4)) {
         if (configured && !input_paused(input) && payload_length > AUDIO_HEADER)
-            audio_play(audio, payload + AUDIO_HEADER, payload_length - AUDIO_HEADER);
+            audio_play(audio, read_u32(payload + 13), payload + AUDIO_HEADER,
+                       payload_length - AUDIO_HEADER);
         return 0;
     }
     if (memcmp(payload, "PDSV", 4) || payload_length < VIDEO_HEADER) return 0;

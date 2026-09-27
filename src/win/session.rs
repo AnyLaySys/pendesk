@@ -2,7 +2,7 @@ use crate::all::args::Config;
 use crate::all::cam::Receiver as CameraReceiver;
 use crate::all::media as transport;
 use crate::all::protocol::{self, Input};
-use crate::audio::Audio;
+use crate::audio::{self, Audio};
 use crate::encoder::Jpeg;
 use crate::gpu::Gpu;
 use crate::input;
@@ -44,7 +44,7 @@ pub fn run(
     let peer = transport::wait_video_peer(video_socket, &config.token, session.nonce)?;
     let mic_socket = MicSocket::new(SOCKET(video_socket.as_raw_socket() as usize))?;
     let active = Arc::new(AtomicBool::new(true));
-    let video_active = Arc::new(AtomicBool::new(true));
+    let video_active = Arc::new(AtomicBool::new(false));
     let camera_active = Arc::new(AtomicBool::new(false));
     let audio_gate = Arc::new((Mutex::new(false), Condvar::new()));
     let audio_thread = start_audio_thread(
@@ -178,6 +178,8 @@ fn start_audio_thread(
         .map_err(|error| error.to_string())?;
     Ok(thread::spawn(move || {
         let mut samples = Vec::new();
+        let mut frame = Vec::with_capacity(audio::FRAME_SAMPLES * 2);
+        let mut encoded = [0; 1152];
         let mut sequence = 0u32;
         while active.load(Ordering::Relaxed) {
             {
@@ -193,16 +195,30 @@ fn start_audio_thread(
             let Ok(mut audio) = Audio::new() else {
                 continue;
             };
-            if protocol::write_audio(&mut stream, audio.rate, audio.channels()).is_err() {
+            let Ok(mut encoder) = audio::encoder() else {
+                break;
+            };
+            if protocol::write_audio(&mut stream).is_err() {
                 break;
             }
             while active.load(Ordering::Relaxed) && *gate.0.lock().unwrap() {
                 if audio.read(&mut samples).is_err() {
                     break;
                 }
-                if !samples.is_empty() {
-                    transport::send_audio_frame(&socket, peer, &mut sequence, &samples);
+                frame.extend_from_slice(&samples);
+                while frame.len() >= audio::FRAME_SAMPLES * 2 {
+                    let Ok(length) =
+                        encoder.encode(&frame[..audio::FRAME_SAMPLES * 2], &mut encoded)
+                    else {
+                        break;
+                    };
+                    transport::send_audio_frame(&socket, peer, &mut sequence, &encoded[..length]);
+                    frame.drain(..audio::FRAME_SAMPLES * 2);
                 }
+            }
+            frame.clear();
+            if protocol::stop_audio(&mut stream).is_err() {
+                break;
             }
         }
     }))

@@ -1,7 +1,7 @@
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
 const MAGIC: [u8; 4] = *b"PDSK";
-pub const VERSION: u8 = 7;
+pub const VERSION: u8 = 8;
 const CONFIG: u8 = 0x10;
 const AUDIO: u8 = 0x11;
 const MOVE: u8 = 0x20;
@@ -77,13 +77,11 @@ pub fn write_config(stream: &mut TcpStream, view: View) -> io::Result<()> {
     packet[8..10].copy_from_slice(&view.height.to_be_bytes());
     stream.write_all(&packet)
 }
-pub fn write_audio(stream: &mut TcpStream, rate: u32, channels: u8) -> io::Result<()> {
-    let mut packet = [0; 10];
-    packet[0] = AUDIO;
-    packet[1] = 5;
-    packet[2..6].copy_from_slice(&rate.to_be_bytes());
-    packet[6] = channels;
-    stream.write_all(&packet)
+pub fn write_audio(stream: &mut TcpStream) -> io::Result<()> {
+    stream.write_all(&[AUDIO, 1, 0, 0, 0, 0, 0, 0, 0, 0])
+}
+pub fn stop_audio(stream: &mut TcpStream) -> io::Result<()> {
+    stream.write_all(&[AUDIO, 0, 0, 0, 0, 0, 0, 0, 0, 0])
 }
 pub fn read_input(stream: &mut TcpStream) -> io::Result<Input> {
     let mut kind = [0];

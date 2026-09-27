@@ -143,6 +143,12 @@ case "${1:-}" in
         network
         HOME="$data" exec "$bin/tailscale" --socket="$data/tailscaled.sock" status --json
         ;;
+    wake)
+        [ "$#" -eq 2 ] || exit 2
+        case "$2" in 100.*) ;; *) exit 2 ;; esac
+        network
+        curl -fsS --max-time 5 --socks5-hostname 127.0.0.1:1055 -X POST "http://$2:8765/wake" > /dev/null
+        ;;
     login)
         network
         if [ -s "$data/auth" ]; then

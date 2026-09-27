@@ -39,8 +39,8 @@ pub fn parse() -> Result<Command, String> {
 pub fn stored(text: &str) -> Result<Config, String> {
     let mut port = None;
     let mut pairing_token = None;
-    let mut fps = 30;
-    let mut quality = 80;
+    let mut fps = 18;
+    let mut quality = 45;
     for line in text.lines() {
         let Some((key, value)) = line.split_once('=') else {
             continue;
@@ -71,8 +71,8 @@ pub fn stored(text: &str) -> Result<Config, String> {
     })
 }
 fn parse_config(mut arguments: impl Iterator<Item = String>) -> Result<Config, String> {
-    let mut fps = 60;
-    let mut quality = 80;
+    let mut fps = 18;
+    let mut quality = 45;
     let mut port = 999;
     let mut pairing_token = None;
     while let Some(option) = arguments.next() {

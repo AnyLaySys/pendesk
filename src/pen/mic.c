@@ -8,6 +8,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/prctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -71,6 +72,7 @@ int mic_start(struct microphone *microphone) {
     char port_arg[16];
     char file_arg[144];
     pid_t process;
+    pid_t parent = getpid();
     int fd;
     if (microphone->process > 0 || mixer(true) != 0) return -1;
     fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
@@ -101,6 +103,7 @@ int mic_start(struct microphone *microphone) {
         return -1;
     }
     if (!process) {
+        if (prctl(PR_SET_PDEATHSIG, SIGKILL) != 0 || getppid() != parent) _exit(127);
         execl("/usr/bin/gst-launch-1.0", "gst-launch-1.0", "-e", "-q", "alsasrc",
               "device=mic_and_ref", "do-timestamp=true", "buffer-time=20000", "latency-time=10000",
               "!", "audio/x-raw,format=S32LE,rate=96000,channels=2", "!", "audioconvert",
@@ -136,8 +139,22 @@ int mic_running(struct microphone *microphone) {
 
 void mic_stop(struct microphone *microphone) {
     if (microphone->process > 0) {
-        kill(microphone->process, SIGINT);
-        while (waitpid(microphone->process, NULL, 0) < 0 && errno == EINTR) {}
+        pid_t process = microphone->process;
+        kill(process, SIGINT);
+        for (int attempt = 0; attempt < 10; ++attempt) {
+            pid_t result = waitpid(process, NULL, WNOHANG);
+            if (result == process || (result < 0 && errno == ECHILD)) {
+                process = 0;
+                break;
+            }
+            if (result < 0 && errno != EINTR) break;
+            struct timespec delay = {.tv_nsec = 100000000};
+            nanosleep(&delay, NULL);
+        }
+        if (process > 0) {
+            kill(process, SIGKILL);
+            while (waitpid(process, NULL, 0) < 0 && errno == EINTR) {}
+        }
     }
     if (microphone->fd >= 0) close(microphone->fd);
     microphone->fd = -1;

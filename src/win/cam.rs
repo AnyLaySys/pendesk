@@ -6,7 +6,9 @@ use std::thread::{self, JoinHandle};
 use crate::all::cam::Frame;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::time::{Duration, Instant};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{
+    ERROR_CLASS_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, RECT, WPARAM,
+};
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLACKNESS, BeginPaint, DIB_RGB_COLORS, EndPaint,
     PAINTSTRUCT, PatBlt, SRCCOPY, StretchDIBits,
@@ -178,7 +180,7 @@ unsafe fn initialize_window() -> Result<(HWND, Box<WindowData>, IWICImagingFacto
             lpszClassName: w!("PenDeskRemoteCamera"),
             ..Default::default()
         };
-        if RegisterClassW(&class) == 0 {
+        if RegisterClassW(&class) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
             return Err("could not register camera window".into());
         }
         let factory: IWICImagingFactory =

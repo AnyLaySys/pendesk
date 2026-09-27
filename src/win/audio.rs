@@ -1,27 +1,26 @@
+use opus::{Application, Bandwidth, Channels, Encoder};
 use std::slice;
-use windows::Win32::Foundation::{CloseHandle, E_NOTIMPL, HANDLE};
+use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Media::Audio::{
-    AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK,
-    IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator,
-    WAVEFORMATEXTENSIBLE, eConsole, eRender,
+    AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
+    AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK,
+    AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, IAudioCaptureClient, IAudioClient,
+    IMMDeviceEnumerator, MMDeviceEnumerator, WAVE_FORMAT_PCM, WAVEFORMATEX, eConsole, eRender,
 };
-use windows::Win32::Media::Multimedia::{KSDATAFORMAT_SUBTYPE_IEEE_FLOAT, WAVE_FORMAT_IEEE_FLOAT};
 use windows::Win32::System::Com::{
-    CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
-    CoUninitialize,
+    CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
 };
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
-use windows::core::{Error, Result};
-const WAVE_FORMAT_EXTENSIBLE: u16 = 0xFFFE;
+use windows::core::Result;
 const AUDCLNT_BUFFERFLAGS_SILENT: u32 = 2;
+pub const FRAME_SAMPLES: usize = 960;
+
 pub struct Audio {
     client: IAudioClient,
     capture: IAudioCaptureClient,
     event: HANDLE,
-    channels: usize,
-    float: bool,
-    pub rate: u32,
 }
+
 impl Audio {
     pub fn new() -> Result<Self> {
         unsafe {
@@ -30,29 +29,26 @@ impl Audio {
                 CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
             let device = enumerator.GetDefaultAudioEndpoint(eRender, eConsole)?;
             let client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
-            let format = client.GetMixFormat()?;
-            let tag = (*format).wFormatTag;
-            let channels = usize::from((*format).nChannels);
-            let rate = (*format).nSamplesPerSec;
-            let bits = (*format).wBitsPerSample;
-            let subformat = std::ptr::read_unaligned(
-                &raw const (*format.cast::<WAVEFORMATEXTENSIBLE>()).SubFormat,
-            );
-            let float = tag == WAVE_FORMAT_IEEE_FLOAT as u16
-                || (tag == WAVE_FORMAT_EXTENSIBLE && subformat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT);
-            if !(1..=2).contains(&channels) || rate == 0 || (!float && bits != 16) {
-                CoTaskMemFree(Some(format.cast()));
-                return Err(Error::from_hresult(E_NOTIMPL));
-            }
+            let format = WAVEFORMATEX {
+                wFormatTag: WAVE_FORMAT_PCM as u16,
+                nChannels: 2,
+                nSamplesPerSec: 48_000,
+                nAvgBytesPerSec: 192_000,
+                nBlockAlign: 4,
+                wBitsPerSample: 16,
+                cbSize: 0,
+            };
             let result = client.Initialize(
                 AUDCLNT_SHAREMODE_SHARED,
-                AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                AUDCLNT_STREAMFLAGS_LOOPBACK
+                    | AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+                    | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+                    | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
                 2_000_000,
                 0,
-                format,
+                &format,
                 None,
             );
-            CoTaskMemFree(Some(format.cast()));
             result?;
             let event = CreateEventW(None, false, false, None)?;
             client.SetEventHandle(event)?;
@@ -62,16 +58,11 @@ impl Audio {
                 client,
                 capture,
                 event,
-                channels,
-                float,
-                rate,
             })
         }
     }
-    pub fn channels(&self) -> u8 {
-        self.channels as u8
-    }
-    pub fn read(&mut self, output: &mut Vec<u8>) -> Result<()> {
+
+    pub fn read(&mut self, output: &mut Vec<i16>) -> Result<()> {
         output.clear();
         unsafe {
             WaitForSingleObject(self.event, 200);
@@ -81,16 +72,11 @@ impl Audio {
                 let mut flags = 0;
                 self.capture
                     .GetBuffer(&mut data, &mut frames, &mut flags, None, None)?;
-                let count = frames as usize * self.channels;
+                let count = frames as usize * 2;
                 if flags & AUDCLNT_BUFFERFLAGS_SILENT != 0 {
-                    output.resize(output.len() + count * 2, 0);
-                } else if self.float {
-                    for sample in slice::from_raw_parts(data.cast::<f32>(), count) {
-                        let value = (sample.clamp(-1.0, 1.0) * 32767.0) as i16;
-                        output.extend_from_slice(&value.to_le_bytes());
-                    }
+                    output.resize(output.len() + count, 0);
                 } else {
-                    output.extend_from_slice(slice::from_raw_parts(data, count * 2));
+                    output.extend_from_slice(slice::from_raw_parts(data.cast::<i16>(), count));
                 }
                 self.capture.ReleaseBuffer(frames)?;
             }
@@ -98,6 +84,15 @@ impl Audio {
         Ok(())
     }
 }
+
+pub fn encoder() -> opus::Result<Encoder> {
+    let mut encoder = Encoder::new(48_000, Channels::Stereo, Application::Audio)?;
+    encoder.set_vbr(true)?;
+    encoder.set_complexity(10)?;
+    encoder.set_bandwidth(Bandwidth::Fullband)?;
+    Ok(encoder)
+}
+
 impl Drop for Audio {
     fn drop(&mut self) {
         unsafe {

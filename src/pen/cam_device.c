@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -156,6 +157,7 @@ int cam_start(struct camera *camera, const struct cfg *cfg) {
     char host[INET_ADDRSTRLEN];
     int descriptors[2];
     pid_t process;
+    pid_t parent = getpid();
     if (camera->process > 0 || find_camera(device, sizeof(device)) != 0) return -1;
     if (inet_pton(AF_INET, cfg->host, host) != 1 ||
         recording_file(camera->path, sizeof(camera->path)) != 0)
@@ -172,6 +174,7 @@ int cam_start(struct camera *camera, const struct cfg *cfg) {
         return -1;
     }
     if (!process) {
+        if (prctl(PR_SET_PDEATHSIG, SIGKILL) != 0 || getppid() != parent) _exit(127);
         int null = open("/dev/null", O_WRONLY);
         close(descriptors[0]);
         if (dup2(descriptors[1], STDOUT_FILENO) < 0) _exit(127);
@@ -203,7 +206,7 @@ int cam_start(struct camera *camera, const struct cfg *cfg) {
 
 void cam_stop(struct camera *camera) {
     if (camera->process > 0) {
-        kill(camera->process, SIGINT);
+        kill(camera->process, SIGKILL);
         while (waitpid(camera->process, NULL, 0) < 0 && errno == EINTR) {}
     }
     if (camera->fd >= 0) close(camera->fd);

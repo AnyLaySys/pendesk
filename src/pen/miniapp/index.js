@@ -14,7 +14,7 @@ const STATE_MOUSE_PAUSED = 4;
 const STATE_RECORDING = 8;
 const FONT = "Google Sans Flex";
 const icons = {
-  screen: "view.png", mouse: "mouse.png", keyboard: "kb.png", mic: "mic.png", camera: "cam.png", folder: "folder.png", file: "file.png", back: "back.png", sound: "sound.png"
+  screen: "view.png", mouse: "mouse.png", keyboard: "kb.png", mic: "mic.png", camera: "cam.png", folder: "folder.png", file: "file.png", back: "back.png", close: "close.png", sound: "sound.png", power: "power.png"
 };
 
 function control(bytes, ordered = false) {
@@ -25,10 +25,6 @@ function control(bytes, ordered = false) {
 
 function launch() {
   native.execShell(command + " < /dev/null > /dev/null 2>&1 &");
-}
-
-function shutdown() {
-  native.execShell("/bin/sh -lc " + quote(RUN) + " stop >/dev/null 2>&1 &");
 }
 
 function state(blocked, paused, mousePaused = false, recording = false) {
@@ -82,10 +78,10 @@ const script = {
   data() {
     try {
       launch();
-      state(false, false);
+      state(false, true, true, false);
     } catch {}
     return {
-      active: true, ready: false, frame: Date.now(), job: null, guard: null, view: "desktop", pad: null, held: [], fileTouch: null, fileScrolled: false, audioOn: false, screenOn: true, mouseOn: true, micOn: false, cameraOn: false,
+      active: true, ready: false, frame: Date.now(), job: null, guard: null, view: "desktop", pad: null, held: [], fileTouch: null, fileScrolled: false, audioOn: false, screenOn: false, mouseOn: false, micOn: false, cameraOn: false,
       fileState: { pen: [], windows: [], transfer: 0, progress: 0 }, fileOffset: { pen: 0, windows: 0 }, fileWatch: null,
       caps: false, modifiers: { Shift: false, Ctrl: false, Win: false, Alt: false }
     };
@@ -99,11 +95,8 @@ const script = {
     state(false, !this.screenOn, !this.mouseOn, this.micOn);
     this.requestFrame();
   },
-  deactivated() {
-    this.suspend();
-  },
   beforeDestroy() {
-    this.suspend();
+    this.exit(false);
   },
   methods: {
     schedule(failed) {
@@ -136,19 +129,17 @@ const script = {
       this.job = null;
       this.guard = null;
     },
-    suspend() {
+    exit(closeMiniApp = true) {
       if (!this.active) return;
       this.active = false;
       this.ready = false;
       this.view = "desktop";
-      this.audioOn = false;
-      if (this.cameraOn) { this.cameraOn = false; control([0x29, 0], true); }
-      if (this.micOn) { this.micOn = false; control([0x28, 0], true); }
+      this.audioOn = this.micOn = this.cameraOn = false;
       this.cancelFrame();
       this.finishPad(false);
       this.releaseKeys();
-      state(true, true, true, this.micOn);
-      shutdown();
+      native.execShell("/bin/sh -lc " + quote(RUN) + " -- stop >/dev/null 2>&1 &");
+      if (closeMiniApp) navigator.closeApp(APPID);
     },
     toggleAudio() {
       if (this.micOn) return;
@@ -171,6 +162,9 @@ const script = {
       control([0x28, this.micOn ? 1 : 0], true);
       control([0x29, this.cameraOn ? 1 : 0], true);
       state(true, true, true, this.micOn);
+    },
+    wakeComputer() {
+      native.execShell("/bin/sh -lc " + quote(RUN) + " -- wake 100.84.66.41 < /dev/null > /dev/null 2>&1 &");
     },
     toggleScreen() {
       this.screenOn = !this.screenOn;
@@ -471,13 +465,14 @@ const style = {
     toolToggle: { position: "absolute", bottom: 9, right: 9, width: 27, height: 27, borderRadius: 14, backgroundColor: "transparent" },
     tools: { width: "100%", height: "100%", position: "relative" },
     toolRail: { position: "absolute", top: 9, left: 45, right: 58, height: 27, flexDirection: "row" },
-    toolItem: { position: "relative", height: 27, flex: 1, marginRight: 3, flexDirection: "row", alignItems: "center", backgroundColor: "#191B21", borderRadius: 3 },
-    toolEmpty: { marginRight: 0, backgroundColor: "transparent" },
-    toolText: { position: "absolute", top: 0, left: 0, right: 0, height: 27, color: "#d9e1e8", fontSize: 18, lineHeight: "27px", textAlign: "center" },
+    toolItem: { position: "relative", height: 27, flex: 1, marginRight: 3, flexDirection: "row", alignItems: "center", justifyContent: "center", backgroundColor: "#191B21", borderRadius: 3 },
+    toolPower: { marginRight: 0 },
+    toolText: { position: "relative", width: 36, height: 27, color: "#d9e1e8", fontSize: 18, lineHeight: "27px", textAlign: "center" },
     toolTextOn: { color: "#0078d4" },
     toolBack: { position: "absolute", top: 9, left: 9, width: 27, height: 27, alignItems: "center", justifyContent: "center" },
+    toolClose: { position: "absolute", bottom: 9, left: 9, width: 27, height: 27, alignItems: "center", justifyContent: "center" },
     toolBackIcon: { width: 27, height: 27 },
-    toolItemIcon: { width: 27, height: 27, marginLeft: 3 },
+    toolItemIcon: { width: 27, height: 27, marginRight: 3 },
     keyboard: { position: "absolute", bottom: 0, left: 0, width: "100%", height: "100%" },
     keyArea: { position: "absolute", top: 0, left: 126, width: 684, height: "100%", flexDirection: "column" },
     touchPad: { position: "absolute", top: 0, width: 126, height: "100%", backgroundColor: "transparent" },
@@ -539,6 +534,9 @@ const render = function () {
   const toolBack = action => create("div", { staticClass: ["toolBack"], on: { click: action } }, [
     icon(icons.back, ["toolBackIcon"])
   ]);
+  const toolClose = action => create("div", { staticClass: ["toolClose"], on: { click: action } }, [
+    icon(icons.close, ["toolBackIcon"])
+  ]);
   const shorten = (value, length) => value.length > length ? value.slice(0, length - 2) + ".." : value;
   const size = value => {
     const units = ["B", "KB", "MB", "GB"];
@@ -558,6 +556,7 @@ const render = function () {
   if (this.view === "tools") {
     return create("div", { staticClass: ["tools"] }, [
       toolBack(() => this.showDesktop()),
+      toolClose(() => this.exit()),
       create("div", { staticClass: ["toolRail"] }, [
       create("div", { staticClass: ["toolItem", "toolScreen"], on: { click: () => this.toggleScreen() } }, [
         icon(icons.screen, ["toolItemIcon"]),
@@ -587,7 +586,10 @@ const render = function () {
         icon(icons.folder, ["toolItemIcon"]),
         text("文件", ["toolText"])
       ]),
-      create("div", { staticClass: ["toolItem", "toolEmpty"] }),
+      create("div", { staticClass: ["toolItem", "toolPower"], on: { click: () => this.wakeComputer() } }, [
+        icon(icons.power, ["toolItemIcon"]),
+        text("\u7535\u6e90", ["toolText"])
+      ]),
       ])
     ]);
   }

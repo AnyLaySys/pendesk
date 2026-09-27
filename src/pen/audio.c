@@ -2,75 +2,105 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "audio.h"
+#include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <signal.h>
-#include <spawn.h>
 #include <stdio.h>
-#include <stdlib.h>
+#include <signal.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/prctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
-extern char **environ;
-
 void audio_init(struct audio *audio) {
-    audio->input = -1;
+    audio->socket = -1;
     audio->process = 0;
 }
 
-int audio_start(struct audio *audio, uint32_t rate, uint8_t channels) {
-    char rate_text[16];
-    char channels_text[8];
-    int input[2];
-    posix_spawn_file_actions_t actions;
+int audio_start(struct audio *audio) {
+    char port_text[6];
+    char port_arg[12];
+    int reservation;
+    int socket_fd;
+    socklen_t address_length = sizeof(audio->address);
     pid_t process;
-    if (audio->process > 0 || channels < 1 || channels > 2 || rate < 8000 || rate > 192000)
-        return -1;
-    snprintf(rate_text, sizeof(rate_text), "%u", rate);
-    snprintf(channels_text, sizeof(channels_text), "%u", channels);
-    char *arguments[] = {"aplay", "-D", "default", "-f", "S16_LE", "-r", rate_text, "-c",
-                         channels_text, "-q", "-", NULL};
-    if (pipe(input) != 0) return -1;
-    fcntl(input[0], F_SETFD, FD_CLOEXEC);
-    fcntl(input[1], F_SETFD, FD_CLOEXEC);
-    posix_spawn_file_actions_init(&actions);
-    posix_spawn_file_actions_adddup2(&actions, input[0], STDIN_FILENO);
-    posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
-    posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
-    if (input[0] > 2) posix_spawn_file_actions_addclose(&actions, input[0]);
-    if (input[1] > 2) posix_spawn_file_actions_addclose(&actions, input[1]);
-    int result = posix_spawnp(&process, arguments[0], &actions, NULL, arguments, environ);
-    posix_spawn_file_actions_destroy(&actions);
-    close(input[0]);
-    if (result != 0) {
-        close(input[1]);
+    pid_t parent = getpid();
+    struct sockaddr_in address = {.sin_family = AF_INET, .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
+    char *arguments[] = {"gst-launch-1.0", "-q", "udpsrc", "address=127.0.0.1", port_arg,
+                         "caps=application/x-rtp,media=(string)audio,encoding-name=(string)OPUS,clock-rate=(int)48000,encoding-params=(string)2,payload=(int)111",
+                         "!", "rtpjitterbuffer", "latency=20", "drop-on-latency=true", "!",
+                         "rtpopusdepay", "!", "opusdec", "!", "audioconvert", "!",
+                         "audioresample", "!", "audio/x-raw,format=S16LE,rate=48000,channels=2",
+                         "!", "alsasink", "device=default", NULL};
+    if (audio->process > 0) {
+        pid_t result = waitpid(audio->process, NULL, WNOHANG);
+        if (result == 0 || (result < 0 && errno == EINTR)) return -1;
+        close(audio->socket);
+        audio->socket = -1;
+        audio->process = 0;
+    }
+    reservation = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (reservation < 0) return -1;
+    if (bind(reservation, (struct sockaddr *) &address, sizeof(address)) != 0 ||
+        getsockname(reservation, (struct sockaddr *) &address, &address_length) != 0) {
+        close(reservation);
         return -1;
     }
-    fcntl(input[1], F_SETPIPE_SZ, 256 * 1024);
-    fcntl(input[1], F_SETFL, O_NONBLOCK);
-    audio->input = input[1];
+    close(reservation);
+    snprintf(port_text, sizeof(port_text), "%u", ntohs(address.sin_port));
+    snprintf(port_arg, sizeof(port_arg), "port=%s", port_text);
+    socket_fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (socket_fd < 0) return -1;
+    process = fork();
+    if (process < 0) {
+        close(socket_fd);
+        return -1;
+    }
+    if (!process) {
+        if (prctl(PR_SET_PDEATHSIG, SIGKILL) != 0 || getppid() != parent) _exit(127);
+        int null = open("/dev/null", O_WRONLY);
+        if (null < 0 || dup2(null, STDOUT_FILENO) < 0 || dup2(null, STDERR_FILENO) < 0)
+            _exit(127);
+        if (null > STDERR_FILENO) close(null);
+        execvp(arguments[0], arguments);
+        _exit(127);
+    }
+    audio->socket = socket_fd;
     audio->process = process;
+    audio->address = address;
     return 0;
 }
 
-void audio_play(struct audio *audio, const uint8_t *samples, size_t length) {
-    if (audio->process <= 0) return;
-    while (length) {
-        ssize_t written = write(audio->input, samples, length);
-        if (written > 0) {
-            samples += written;
-            length -= (size_t) written;
-            continue;
-        }
+void audio_play(struct audio *audio, uint32_t sequence, const uint8_t *frame, size_t length) {
+    uint8_t packet[12 + 1152];
+    uint32_t timestamp = sequence * 960U;
+    if (audio->process <= 0 || !length || length > 1152) return;
+    if (waitpid(audio->process, NULL, WNOHANG) == audio->process) {
+        close(audio->socket);
+        audio->socket = -1;
+        audio->process = 0;
         return;
     }
+    packet[0] = 0x80;
+    packet[1] = 111;
+    packet[2] = (uint8_t) (sequence >> 8);
+    packet[3] = (uint8_t) sequence;
+    packet[4] = (uint8_t) (timestamp >> 24);
+    packet[5] = (uint8_t) (timestamp >> 16);
+    packet[6] = (uint8_t) (timestamp >> 8);
+    packet[7] = (uint8_t) timestamp;
+    memcpy(packet + 8, "PDSK", 4);
+    memcpy(packet + 12, frame, length);
+    sendto(audio->socket, packet, 12 + length, MSG_DONTWAIT,
+           (struct sockaddr *) &audio->address, sizeof(audio->address));
 }
 
 void audio_stop(struct audio *audio) {
+    if (audio->socket >= 0) close(audio->socket);
+    audio->socket = -1;
     if (audio->process <= 0) return;
-    close(audio->input);
-    kill(audio->process, SIGTERM);
+    kill(audio->process, SIGKILL);
     while (waitpid(audio->process, NULL, 0) < 0 && errno == EINTR) {}
-    audio->input = -1;
     audio->process = 0;
 }

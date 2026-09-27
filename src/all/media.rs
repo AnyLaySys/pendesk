@@ -5,6 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const VIDEO_HELLO: [u8; 4] = *b"PDSU";
+const VIDEO_ACK: [u8; 4] = *b"PDSH";
 const VIDEO_FRAME: [u8; 4] = *b"PDSV";
 const AUDIO_FRAME: [u8; 4] = *b"PDSA";
 const VIDEO_HEADER: usize = 25;
@@ -34,6 +35,13 @@ pub fn wait_video_peer(
                     && packet[5..37] == token[..]
                     && packet[37..] == nonce =>
             {
+                let mut ack = [0; 13];
+                ack[..4].copy_from_slice(&VIDEO_ACK);
+                ack[4] = protocol::VERSION;
+                ack[5..].copy_from_slice(&nonce);
+                socket
+                    .send_to(&ack, address)
+                    .map_err(|error| error.to_string())?;
                 return Ok(VideoPeer { address, nonce });
             }
             Ok(_) => {}
@@ -78,20 +86,16 @@ pub fn send_video_frame(socket: &UdpSocket, peer: VideoPeer, sequence: u32, fram
     }
 }
 
-pub fn send_audio_frame(socket: &UdpSocket, peer: VideoPeer, sequence: &mut u32, samples: &[u8]) {
+pub fn send_audio_frame(socket: &UdpSocket, peer: VideoPeer, sequence: &mut u32, frame: &[u8]) {
+    if frame.is_empty() || frame.len() > AUDIO_PAYLOAD {
+        return;
+    }
     let mut packet = [0; AUDIO_HEADER + AUDIO_PAYLOAD];
     packet[..4].copy_from_slice(&AUDIO_FRAME);
     packet[4] = protocol::VERSION;
     packet[5..13].copy_from_slice(&peer.nonce);
-    for chunk in samples.chunks(AUDIO_PAYLOAD) {
-        *sequence = sequence.wrapping_add(1);
-        packet[13..17].copy_from_slice(&sequence.to_be_bytes());
-        packet[AUDIO_HEADER..AUDIO_HEADER + chunk.len()].copy_from_slice(chunk);
-        if socket
-            .send_to(&packet[..AUDIO_HEADER + chunk.len()], peer.address)
-            .is_err()
-        {
-            return;
-        }
-    }
+    *sequence = sequence.wrapping_add(1);
+    packet[13..17].copy_from_slice(&sequence.to_be_bytes());
+    packet[AUDIO_HEADER..AUDIO_HEADER + frame.len()].copy_from_slice(frame);
+    let _ = socket.send_to(&packet[..AUDIO_HEADER + frame.len()], peer.address);
 }
