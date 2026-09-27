@@ -266,7 +266,7 @@ function Build-Package([string]$Output) {
     $miniAppIcons = @(
         (Join-Path $miniAppSource 'back.png'),
         (Join-Path $miniAppSource 'cam.png'),
-        (Join-Path $miniAppSource 'close.png'),
+        (Join-Path $miniAppSource 'stop.png'),
         (Join-Path $miniAppSource 'file.png'),
         (Join-Path $miniAppSource 'folder.png'),
         (Join-Path $miniAppSource 'kb.png'),

@@ -14,7 +14,7 @@ const STATE_MOUSE_PAUSED = 4;
 const STATE_RECORDING = 8;
 const FONT = "Google Sans Flex";
 const icons = {
-  screen: "view.png", mouse: "mouse.png", keyboard: "kb.png", mic: "mic.png", camera: "cam.png", folder: "folder.png", file: "file.png", back: "back.png", close: "close.png", sound: "sound.png", power: "power.png"
+  screen: "view.png", mouse: "mouse.png", keyboard: "kb.png", mic: "mic.png", camera: "cam.png", folder: "folder.png", file: "file.png", back: "back.png", stop: "stop.png", sound: "sound.png", power: "power.png"
 };
 
 function control(bytes, ordered = false) {
@@ -46,6 +46,7 @@ const arrows = { Left: "\u2190", Up: "\u2191", Right: "\u2192", Down: "\u2193" }
 const keyboardWidth = 15;
 const fileRows = 8;
 const fileVisible = 7;
+const fileWidth = 457;
 const padX = 65535 / 936;
 const padY = 65535 / 256;
 const key = (label, span = 1) => ({ label, span });
@@ -96,7 +97,7 @@ const script = {
     this.requestFrame();
   },
   beforeDestroy() {
-    this.exit(false);
+    this.stop();
   },
   methods: {
     schedule(failed) {
@@ -129,17 +130,17 @@ const script = {
       this.job = null;
       this.guard = null;
     },
-    exit(closeMiniApp = true) {
-      if (!this.active) return;
-      this.active = false;
-      this.ready = false;
-      this.view = "desktop";
-      this.audioOn = this.micOn = this.cameraOn = false;
-      this.cancelFrame();
-      this.finishPad(false);
-      this.releaseKeys();
+    stop() {
+      const running = this.active;
+      if (running) {
+        this.active = false;
+        this.ready = false;
+        this.audioOn = this.micOn = this.cameraOn = false;
+        this.cancelFrame();
+        this.finishPad(false);
+        this.releaseKeys();
+      }
       native.execShell("/bin/sh -lc " + quote(RUN) + " -- stop >/dev/null 2>&1 &");
-      if (closeMiniApp) navigator.closeApp(APPID);
     },
     toggleAudio() {
       if (this.micOn) return;
@@ -464,13 +465,13 @@ const style = {
     desktop: { width: "100%", height: "100%", position: "absolute", top: 0, left: 0 },
     toolToggle: { position: "absolute", bottom: 9, right: 9, width: 27, height: 27, borderRadius: 14, backgroundColor: "transparent" },
     tools: { width: "100%", height: "100%", position: "relative" },
-    toolRail: { position: "absolute", top: 9, left: 45, right: 58, height: 27, flexDirection: "row" },
+    toolRail: { position: "absolute", top: 9, left: 45, right: 9, height: 27, flexDirection: "row" },
     toolItem: { position: "relative", height: 27, flex: 1, marginRight: 3, flexDirection: "row", alignItems: "center", justifyContent: "center", backgroundColor: "#191B21", borderRadius: 3 },
     toolPower: { marginRight: 0 },
     toolText: { position: "relative", width: 36, height: 27, color: "#d9e1e8", fontSize: 18, lineHeight: "27px", textAlign: "center" },
     toolTextOn: { color: "#0078d4" },
     toolBack: { position: "absolute", top: 9, left: 9, width: 27, height: 27, alignItems: "center", justifyContent: "center" },
-    toolClose: { position: "absolute", bottom: 9, left: 9, width: 27, height: 27, alignItems: "center", justifyContent: "center" },
+    toolStop: { position: "absolute", bottom: 9, left: 9, width: 27, height: 27, alignItems: "center", justifyContent: "center" },
     toolBackIcon: { width: 27, height: 27 },
     toolItemIcon: { width: 27, height: 27, marginRight: 3 },
     keyboard: { position: "absolute", bottom: 0, left: 0, width: "100%", height: "100%" },
@@ -483,23 +484,23 @@ const style = {
     label: { color: "#77767b", opacity: 0.6, fontSize: 18, textAlign: "center" },
     selectedLabel: { color: "#a8c7fa", opacity: 1 },
     files: { width: "100%", height: "100%", position: "relative" },
-    fileDevice: { position: "absolute", top: 9, width: 450, color: "#f4f6f8", fontSize: 18, textAlign: "center" },
-    filePenTitle: { left: 16 },
+    fileDevice: { position: "absolute", top: 9, width: fileWidth, color: "#f4f6f8", fontSize: 18, textAlign: "center" },
+    filePenTitle: { left: 9 },
     fileWindowsTitle: { left: 469 },
-    fileList: { position: "absolute", top: 36, bottom: 3, width: 450, backgroundColor: "#252a32", borderRadius: 3, overflow: "hidden" },
-    fileEntries: { position: "absolute", top: 0, left: 0, width: 450, bottom: 27, overflow: "hidden" },
-    filePen: { left: 16 },
+    fileList: { position: "absolute", top: 36, bottom: 3, width: fileWidth, backgroundColor: "#252a32", borderRadius: 3, overflow: "hidden" },
+    fileEntries: { position: "absolute", top: 0, left: 0, width: fileWidth, bottom: 27, overflow: "hidden" },
+    filePen: { left: 9 },
     fileWindows: { left: 469 },
-    fileRow: { position: "absolute", left: 0, width: 450, height: 27 },
-    fileEntryMain: { position: "absolute", top: 0, left: 0, width: 450, height: 27 },
+    fileRow: { position: "absolute", left: 0, width: fileWidth, height: 27 },
+    fileEntryMain: { position: "absolute", top: 0, left: 0, width: fileWidth, height: 27 },
     fileEntryIconButton: { position: "absolute", top: 0, left: 6, width: 27, height: 27, alignItems: "center", justifyContent: "center" },
     fileEntryIcon: { width: 27, height: 27 },
     fileName: { position: "absolute", top: 0, left: 42, height: 27, color: "#f0f3f7", fontSize: 18, lineHeight: "27px" },
     fileSelected: { color: "#0078d4" },
     fileSuccess: { color: "#107c10" },
     fileFailed: { color: "#d13438" },
-    fileSize: { position: "absolute", top: 0, left: 388, width: 54, height: 27, color: "#8993a0", fontSize: 18, lineHeight: "27px", textAlign: "right" },
-    fileTransfer: { position: "absolute", bottom: 0, left: 0, width: 450, height: 27, overflow: "hidden", flexDirection: "row", alignItems: "center", justifyContent: "center" },
+    fileSize: { position: "absolute", top: 0, left: fileWidth - 62, width: 54, height: 27, color: "#8993a0", fontSize: 18, lineHeight: "27px", textAlign: "right" },
+    fileTransfer: { position: "absolute", bottom: 0, left: 0, width: fileWidth, height: 27, overflow: "hidden", flexDirection: "row", alignItems: "center", justifyContent: "center" },
     fileProgress: { position: "absolute", top: 0, left: 0, height: "100%", backgroundColor: "#0078d4" },
     filePush: { backgroundColor: "#173a58" },
     filePull: { backgroundColor: "#173f49" },
@@ -534,8 +535,8 @@ const render = function () {
   const toolBack = action => create("div", { staticClass: ["toolBack"], on: { click: action } }, [
     icon(icons.back, ["toolBackIcon"])
   ]);
-  const toolClose = action => create("div", { staticClass: ["toolClose"], on: { click: action } }, [
-    icon(icons.close, ["toolBackIcon"])
+  const toolStop = action => create("div", { staticClass: ["toolStop"], on: { click: action } }, [
+    icon(icons.stop, ["toolBackIcon"])
   ]);
   const shorten = (value, length) => value.length > length ? value.slice(0, length - 2) + ".." : value;
   const size = value => {
@@ -556,7 +557,7 @@ const render = function () {
   if (this.view === "tools") {
     return create("div", { staticClass: ["tools"] }, [
       toolBack(() => this.showDesktop()),
-      toolClose(() => this.exit()),
+      toolStop(() => this.stop()),
       create("div", { staticClass: ["toolRail"] }, [
       create("div", { staticClass: ["toolItem", "toolScreen"], on: { click: () => this.toggleScreen() } }, [
         icon(icons.screen, ["toolItemIcon"]),
