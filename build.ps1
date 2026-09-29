@@ -278,6 +278,7 @@ function Build-Package([string]$Output) {
         (Join-Path $miniAppSource 'kb.png'),
         (Join-Path $miniAppSource 'mic.png'),
         (Join-Path $miniAppSource 'mouse.png'),
+        (Join-Path $miniAppSource 'touch.png'),
         (Join-Path $miniAppSource 'view.png'),
         (Join-Path $miniAppSource 'sound.png'),
         (Join-Path $miniAppSource 'power.png')

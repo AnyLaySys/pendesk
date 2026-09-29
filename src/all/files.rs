@@ -5,7 +5,7 @@ use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 const MAGIC: [u8; 4] = *b"PDSF";
-const VERSION: u8 = 2;
+const VERSION: u8 = 3;
 const LIST: u8 = 1;
 const DOWNLOAD: u8 = 2;
 const UPLOAD: u8 = 3;
@@ -16,6 +16,7 @@ pub struct Entry {
     pub name: String,
     pub directory: bool,
     pub size: u64,
+    pub modified: u64,
 }
 pub trait Storage {
     fn roots(&self) -> Vec<Entry>;
@@ -94,6 +95,7 @@ fn write_entries(stream: &mut TcpStream, mut entries: Vec<Entry>) -> io::Result<
         stream.write_all(&[u8::from(entry.directory)])?;
         write_text(stream, &entry.name)?;
         write_u64(stream, entry.size)?;
+        write_u64(stream, entry.modified)?;
     }
     Ok(())
 }

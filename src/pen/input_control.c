@@ -32,12 +32,17 @@ int input_control_read(struct input_state *input) {
         size_t offset = 0;
         while (offset < input->control_length) {
             uint8_t type = input->control_buffer[offset];
-            size_t length =
-                    type == 2 || type == 0x27 ? 2 : type == 0x20 ? 5 : type == 0x21 || type == 0x26
-                                                                       ? 3 : type == 0x23 ? 4 :
-                                                                             type == 0x28 ||
-                                                                             type == 0x29 ? 2 : 0;
-            if (!length) return -1;
+            size_t length;
+            if (type == 0x2a) {
+                if (offset + 2 > input->control_length) break;
+                if (input->control_buffer[offset + 1] > 10) return -1;
+                length = 2 + input->control_buffer[offset + 1] * 6;
+            } else {
+                length = type == 2 || type == 0x27 || type == 0x28 || type == 0x29 ? 2 :
+                         type == 0x20 ? 5 : type == 0x21 || type == 0x26 ? 3 :
+                         type == 0x23 ? 4 : 0;
+                if (!length) return -1;
+            }
             if (offset + length > input->control_length) break;
             if (type == 2) {
                 bool paused = input->control_buffer[offset + 1] & STATE_VIDEO_PAUSED;

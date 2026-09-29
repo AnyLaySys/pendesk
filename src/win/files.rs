@@ -2,6 +2,7 @@ use crate::all::files::{Entry, Storage, safe_name};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 use windows::Win32::Storage::FileSystem::GetLogicalDrives;
 pub struct Disk;
 impl Storage for Disk {
@@ -14,6 +15,7 @@ impl Storage for Disk {
                     name: format!("{}:", char::from(b'A' + index as u8)),
                     directory: true,
                     size: 0,
+                    modified: 0,
                 });
             }
         }
@@ -89,5 +91,10 @@ fn entry_data(root: &Path, path: PathBuf, name: std::ffi::OsString) -> io::Resul
         name,
         directory: metadata.is_dir(),
         size: metadata.len(),
+        modified: metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map_or(0, |time| time.as_secs()),
     })
 }

@@ -236,6 +236,7 @@ fn start_input_thread(
     thread::spawn(move || {
         let mut pressed_keys = [false; 256];
         let mut pressed_buttons = [false; 4];
+        let mut active_touches = [None; 10];
         while active.load(Ordering::Relaxed) {
             match protocol::read_input(&mut stream) {
                 Ok(Input::Move(x, y)) => {
@@ -274,6 +275,31 @@ fn start_input_thread(
                 Ok(Input::Wheel(delta)) => {
                     let _ = input::wheel(delta);
                 }
+                Ok(Input::Touch(points)) => {
+                    let view = viewport.lock().unwrap();
+                    let contacts = points
+                        .iter()
+                        .map(|point| {
+                            let (x, y) = view.touch_point(point.x, point.y);
+                            input::TouchContact {
+                                id: point.id,
+                                phase: point.phase,
+                                x,
+                                y,
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    drop(view);
+                    if input::touch(&contacts).is_ok() {
+                        for contact in contacts {
+                            active_touches[usize::from(contact.id)] = if contact.phase == 3 {
+                                None
+                            } else {
+                                Some(contact)
+                            };
+                        }
+                    }
+                }
                 Ok(Input::Audio(enabled)) => {
                     *audio_gate.0.lock().unwrap() = enabled;
                     audio_gate.1.notify_one();
@@ -285,6 +311,15 @@ fn start_input_thread(
                 _ => break,
             }
         }
+        let releases = active_touches
+            .into_iter()
+            .flatten()
+            .map(|mut contact| {
+                contact.phase = 3;
+                contact
+            })
+            .collect::<Vec<_>>();
+        let _ = input::touch(&releases);
         for (key, pressed) in pressed_keys.into_iter().enumerate() {
             if pressed {
                 let _ = input::key(key as u16, false);

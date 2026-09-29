@@ -72,6 +72,7 @@ static int local_list(struct file_panel *panel) {
         snprintf(output->name, sizeof(output->name), "%s", entry->d_name);
         output->directory = S_ISDIR(status.st_mode);
         output->size = (uint64_t) status.st_size;
+        output->modified = status.st_mtime > 0 ? (uint64_t) status.st_mtime : 0;
         output->state = FILE_STATUS_NONE;
         output->progress = 0;
     }
@@ -95,7 +96,8 @@ int files_remote_list(struct files *files, struct file_panel *panel) {
         struct file_entry item = {0};
         if (files_read_all(fd, &kind, 1) != 0 ||
             files_read_text(fd, item.name, sizeof(item.name)) != 0 ||
-            files_read_u64(fd, &item.size) != 0 || (kind != 0 && kind != 1) ||
+            files_read_u64(fd, &item.size) != 0 ||
+            files_read_u64(fd, &item.modified) != 0 || (kind != 0 && kind != 1) ||
             !files_valid_name(item.name)) {
             close(fd);
             return -1;
@@ -172,8 +174,9 @@ static int state_text(FILE *output, const char *text) {
 static int state_entry(FILE *output, const struct file_entry *entry, bool parent) {
     if (fputs("{\"name\":", output) == EOF ||
         state_text(output, parent ? ".." : entry->name) != 0 ||
-        fprintf(output, ",\"size\":%llu,\"directory\":%u,\"state\":%u,\"progress\":%u,\"parent\":%u}",
-                (unsigned long long) (parent ? 0 : entry->size), parent || entry->directory,
+        fprintf(output, ",\"size\":%llu,\"modified\":%llu,\"directory\":%u,\"state\":%u,\"progress\":%u,\"parent\":%u}",
+                (unsigned long long) (parent ? 0 : entry->size),
+                (unsigned long long) (parent ? 0 : entry->modified), parent || entry->directory,
                 parent ? FILE_STATUS_NONE : entry->state, parent ? 0 : entry->progress, parent) < 0)
         return -1;
     return 0;

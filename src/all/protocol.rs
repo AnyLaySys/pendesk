@@ -1,7 +1,7 @@
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
 const MAGIC: [u8; 4] = *b"PDSK";
-pub const VERSION: u8 = 8;
+pub const VERSION: u8 = 9;
 const CONFIG: u8 = 0x10;
 const AUDIO: u8 = 0x11;
 const MOVE: u8 = 0x20;
@@ -12,6 +12,8 @@ const VIDEO: u8 = 0x25;
 const WHEEL: u8 = 0x26;
 const AUDIO_TOGGLE: u8 = 0x27;
 const CAMERA_TOGGLE: u8 = 0x29;
+const TOUCH: u8 = 0x2a;
+const TOUCH_POINTS: u8 = 10;
 #[derive(Clone, Copy)]
 pub struct Video {
     pub width: u16,
@@ -29,6 +31,13 @@ pub struct View {
     pub x: u16,
     pub y: u16,
 }
+#[derive(Clone, Copy)]
+pub struct TouchPoint {
+    pub id: u8,
+    pub phase: u8,
+    pub x: u16,
+    pub y: u16,
+}
 pub enum Input {
     Move(i16, i16),
     Button(u8, bool),
@@ -38,6 +47,7 @@ pub enum Input {
     Wheel(i16),
     Audio(bool),
     Camera(bool),
+    Touch(Vec<TouchPoint>),
 }
 pub fn authenticate_with_magic(
     stream: &mut TcpStream,
@@ -130,11 +140,49 @@ pub fn read_input(stream: &mut TcpStream) -> io::Result<Input> {
                 )),
             }
         }
+        TOUCH => Ok(Input::Touch(read_touch(stream)?)),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "unknown input packet",
         )),
     }
+}
+fn read_touch(stream: &mut TcpStream) -> io::Result<Vec<TouchPoint>> {
+    let mut count = [0];
+    stream.read_exact(&mut count)?;
+    if count[0] > TOUCH_POINTS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "too many touch points",
+        ));
+    }
+    let mut points = Vec::with_capacity(usize::from(count[0]));
+    let mut ids = 0u16;
+    for _ in 0..count[0] {
+        let mut bytes = [0; 6];
+        stream.read_exact(&mut bytes)?;
+        if bytes[0] >= TOUCH_POINTS || !(1..=3).contains(&bytes[1]) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid touch point",
+            ));
+        }
+        let bit = 1u16 << bytes[0];
+        if ids & bit != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "duplicate touch point",
+            ));
+        }
+        ids |= bit;
+        points.push(TouchPoint {
+            id: bytes[0],
+            phase: bytes[1],
+            x: u16::from_be_bytes([bytes[2], bytes[3]]),
+            y: u16::from_be_bytes([bytes[4], bytes[5]]),
+        });
+    }
+    Ok(points)
 }
 fn read_u16(stream: &mut TcpStream) -> io::Result<u16> {
     let mut value = [0; 2];

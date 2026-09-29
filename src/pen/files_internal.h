@@ -13,7 +13,7 @@ enum {
     FILE_ENTRIES = 192,
     FILE_NAME = 256,
     FILE_PATH = 1024,
-    FILE_VERSION = 2,
+    FILE_VERSION = 3,
     FILE_LIST = 1,
     FILE_DOWNLOAD = 2,
     FILE_UPLOAD = 3,
@@ -31,6 +31,7 @@ enum {
 struct file_entry {
     char name[FILE_NAME];
     uint64_t size;
+    uint64_t modified;
     bool directory;
     uint8_t state;
     uint8_t progress;

@@ -107,6 +107,16 @@ impl Viewport {
         )
     }
 
+    pub fn touch_point(&self, x: u16, y: u16) -> (i32, i32) {
+        let (left, top, width, height) = self.capture();
+        let max_x = u32::from(self.video.height.saturating_sub(1));
+        let max_y = u32::from(self.video.width.saturating_sub(1));
+        (
+            left + (u32::from(x).min(max_x) * width.saturating_sub(1) as u32 / max_x.max(1)) as i32,
+            top + (u32::from(y).min(max_y) * height.saturating_sub(1) as u32 / max_y.max(1)) as i32,
+        )
+    }
+
     fn sync_pointer(&mut self) {
         let mut point = POINT::default();
         if unsafe { GetCursorPos(&mut point) }.is_ok() {

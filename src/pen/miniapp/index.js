@@ -14,7 +14,7 @@ const STATE_MOUSE_PAUSED = 4;
 const STATE_RECORDING = 8;
 const FONT = "Google Sans Flex";
 const icons = {
-  screen: "view.png", mouse: "mouse.png", keyboard: "kb.png", mic: "mic.png", camera: "cam.png", folder: "folder.png", file: "file.png", back: "back.png", stop: "stop.png", sound: "sound.png", power: "power.png"
+  screen: "view.png", mouse: "mouse.png", touch: "touch.png", keyboard: "kb.png", mic: "mic.png", camera: "cam.png", folder: "folder.png", file: "file.png", back: "back.png", stop: "stop.png", sound: "sound.png", power: "power.png"
 };
 
 function control(bytes, ordered = false) {
@@ -44,7 +44,7 @@ const shifted = {
 };
 const arrows = { Left: "\u2190", Up: "\u2191", Right: "\u2192", Down: "\u2193" };
 const keyboardWidth = 15;
-const fileRows = 6;
+const fileRows = 7;
 const gestureThreshold = 9;
 const mouseSensitivityX = 70;
 const mouseSensitivityY = 256;
@@ -82,7 +82,7 @@ const script = {
       state(false, true, true, false);
     } catch {}
     return {
-      active: true, ready: false, frame: Date.now(), job: null, guard: null, view: "desktop", pad: null, held: [], fileTouch: null, fileScrolled: false, audioOn: false, screenOn: false, mouseOn: false, micOn: false, cameraOn: false,
+      active: true, ready: false, frame: Date.now(), job: null, guard: null, view: "desktop", pad: null, held: [], directTouches: {}, fileTouch: null, fileScrolled: false, audioOn: false, screenOn: false, mouseOn: false, touchOn: false, micOn: false, cameraOn: false,
       fileState: { pen: [], windows: [], revision: 0 }, fileOffset: { pen: 0, windows: 0 }, fileSession: 0,
       caps: false, modifiers: { Shift: false, Ctrl: false, Win: false, Alt: false }
     };
@@ -137,6 +137,7 @@ const script = {
         this.ready = false;
         this.audioOn = this.micOn = this.cameraOn = false;
         this.cancelFrame();
+        this.touchRelease();
         this.finishPad(false);
         this.releaseKeys();
       }
@@ -171,7 +172,14 @@ const script = {
       this.screenOn = !this.screenOn;
     },
     toggleMouse() {
-      this.mouseOn = !this.mouseOn;
+      this.touchRelease();
+      this.finishPad(false);
+      if (this.touchOn) this.touchOn = false;
+      else if (this.mouseOn) {
+        this.mouseOn = false;
+        this.touchOn = true;
+      }
+      else this.mouseOn = true;
       state(true, true, !this.mouseOn, this.micOn);
     },
     releaseKeys() {
@@ -186,6 +194,7 @@ const script = {
       this.held = [];
     },
     showTools() {
+      this.touchRelease();
       this.finishPad(false);
       this.releaseKeys();
       this.cancelFrame();
@@ -206,6 +215,7 @@ const script = {
       this.fileAction("reset");
     },
     showDesktop() {
+      this.touchRelease();
       this.finishPad(false);
       this.releaseKeys();
       this.view = "desktop";
@@ -220,6 +230,7 @@ const script = {
         if (!this.fileState[side].some(entry => entry.state === 1)) return;
       }
       native.execShell("/bin/sh -lc " + quote(RUN) + " -- files " + action);
+      this.loadFiles();
     },
     fileChanged(session) {
       if (this.view === "files" && session === this.fileSession) this.loadFiles();
@@ -251,7 +262,7 @@ const script = {
       const distance = touch.y - this.fileY(event);
       if (Math.abs(distance) < 9) return;
       this.fileScrolled = true;
-      this.fileScroll(side, touch.offset + Math.round(distance / 33));
+      this.fileScroll(side, touch.offset + Math.round(distance / 27));
     },
     fileTouchEnd(side, event) {
       const touch = this.fileTouch;
@@ -260,7 +271,7 @@ const script = {
       const distance = touch.y - this.fileY(event);
       if (Math.abs(distance) >= 9) {
         this.fileScrolled = true;
-        this.fileScroll(side, touch.offset + Math.round(distance / 33));
+        this.fileScroll(side, touch.offset + Math.round(distance / 27));
         setTimeout(() => { this.fileScrolled = false; }, 90);
       }
     },
@@ -269,11 +280,60 @@ const script = {
       const changed = event && event.changedTouches;
       return active && active.length ? active : changed && changed.length ? changed : event ? [event] : [];
     },
+    touchPoint(touch, event) {
+      const point = this.padPosition(touch);
+      const target = event && (event.currentTarget || event.target);
+      const rect = target && target.getBoundingClientRect && target.getBoundingClientRect();
+      return {
+        id: point.id,
+        x: Math.max(0, Math.round(point.x - (rect ? rect.left : 0))),
+        y: Math.max(0, Math.round(point.y - (rect ? rect.top : 0)))
+      };
+    },
+    touchFrame(event, ending) {
+      if (this.view !== "desktop" || !this.touchOn) return;
+      const active = event && event.touches || (ending ? [] : [event]);
+      const changed = event && event.changedTouches || (event ? [event] : []);
+      const points = [];
+      for (let index = 0; index < active.length; index++) {
+        const point = this.touchPoint(active[index], event);
+        point.phase = this.directTouches[point.id] ? 2 : 1;
+        points.push(point);
+      }
+      if (ending) {
+        for (let index = 0; index < changed.length; index++) {
+          const point = this.touchPoint(changed[index], event);
+          if (!active.some(item => (item.identifier === undefined ? 0 : item.identifier) === point.id)) {
+            const previous = this.directTouches[point.id] || point;
+            points.push({ id: point.id, phase: 3, x: previous.x, y: previous.y });
+          }
+        }
+      }
+      if (!points.length) return;
+      const packet = [0x2a, points.length];
+      points.forEach(point => packet.push(point.id, point.phase, point.x >> 8, point.x, point.y >> 8, point.y));
+      control(packet, true);
+      points.forEach(point => {
+        if (point.phase === 3) delete this.directTouches[point.id];
+        else this.directTouches[point.id] = point;
+      });
+    },
+    touchRelease() {
+      const points = Object.keys(this.directTouches).map(id => {
+        const point = this.directTouches[id];
+        return [Number(id), 3, point.x, point.y];
+      });
+      this.directTouches = {};
+      if (!points.length) return;
+      const packet = [0x2a, points.length];
+      points.forEach(point => packet.push(point[0], point[1], point[2] >> 8, point[2], point[3] >> 8, point[3]));
+      control(packet, true);
+    },
     padPosition(touch) {
       return {
         id: touch.identifier === undefined ? 0 : touch.identifier,
-        x: touch.pageX === undefined ? (touch.clientX === undefined ? touch.x || 0 : touch.clientX) : touch.pageX,
-        y: touch.pageY === undefined ? (touch.clientY === undefined ? touch.y || 0 : touch.clientY) : touch.pageY
+        x: touch.pageX === undefined ? (touch.clientX === undefined ? (touch.screenX === undefined ? touch.x || 0 : touch.screenX) : touch.clientX) : touch.pageX,
+        y: touch.pageY === undefined ? (touch.clientY === undefined ? (touch.screenY === undefined ? touch.y || 0 : touch.screenY) : touch.clientY) : touch.pageY
       };
     },
     padPoint(touches, id) {
@@ -463,15 +523,16 @@ const style = {
     root: { width: "100%", height: "100%", position: "relative" },
     font: { fontFamily: FONT },
     desktop: { width: "100%", height: "100%", position: "absolute", top: 0, left: 0 },
+    touchSurface: { width: "100%", height: "100%", position: "absolute", top: 0, left: 0, backgroundColor: "transparent" },
     toolToggle: { position: "absolute", bottom: 9, right: 9, width: 27, height: 27, borderRadius: 14, backgroundColor: "transparent" },
     tools: { width: "100%", height: "100%", position: "relative" },
-    toolRail: { position: "absolute", top: 9, left: 51, right: 9, height: 33, flexDirection: "row" },
-    toolItem: { position: "relative", height: 33, flex: 1, marginRight: 3, flexDirection: "row", alignItems: "center", justifyContent: "center", backgroundColor: "#1D1E21", borderRadius: 9 },
+    toolRail: { position: "absolute", top: 9, left: 45, right: 9, height: 27, flexDirection: "row" },
+    toolItem: { position: "relative", height: 27, flex: 1, marginRight: 3, flexDirection: "row", alignItems: "center", justifyContent: "center", backgroundColor: "#1D1E21", borderRadius: 9 },
     toolItemSelected: { backgroundColor: "#3474F0" },
     toolPower: { marginRight: 0 },
     toolText: { position: "relative", width: 36, height: 27, color: "#e6e1e5", fontSize: 18, lineHeight: "27px", textAlign: "center" },
-    toolBack: { position: "absolute", top: 9, left: 9, width: 33, height: 33, alignItems: "center", justifyContent: "center", backgroundColor: "#1D1E21", borderRadius: 9 },
-    toolStop: { position: "absolute", bottom: 9, left: 9, width: 33, height: 33, alignItems: "center", justifyContent: "center", backgroundColor: "#1D1E21", borderRadius: 9 },
+    toolBack: { position: "absolute", top: 9, left: 9, width: 27, height: 27, alignItems: "center", justifyContent: "center", backgroundColor: "#1D1E21", borderRadius: 9 },
+    toolStop: { position: "absolute", bottom: 9, left: 9, width: 27, height: 27, alignItems: "center", justifyContent: "center", backgroundColor: "#1D1E21", borderRadius: 9 },
     toolBackIcon: { width: 27, height: 27 },
     toolItemIcon: { width: 27, height: 27, marginRight: 3 },
     keyboard: { position: "absolute", bottom: 0, left: 0, width: "100%", height: "100%" },
@@ -484,27 +545,28 @@ const style = {
     label: { color: "#77767b", opacity: 0.6, fontSize: 18, textAlign: "center" },
     selectedLabel: { color: "#a8c7fa", opacity: 1 },
     files: { width: "100%", height: "100%", position: "relative" },
-    fileRail: { position: "absolute", top: 9, left: 51, right: 9, height: 33, flexDirection: "row" },
-    fileTitle: { position: "relative", height: 33, flex: 1, marginRight: 3, alignItems: "center", justifyContent: "center", backgroundColor: "#1D1E21", borderRadius: 9 },
-    fileTitleLast: { marginRight: 0 },
+    filePanel: { position: "absolute", top: 9, bottom: 9, left: 45, right: 9, backgroundColor: "#1D1E21", borderRadius: 9, overflow: "hidden" },
+    fileRail: { position: "absolute", top: 0, left: 0, right: 0, height: 27, flexDirection: "row" },
+    fileTitle: { position: "relative", height: 27, flex: 1, alignItems: "center", justifyContent: "center" },
     fileTitleText: { color: "#e6e1e5", fontSize: 18, lineHeight: "27px", textAlign: "center" },
-    filePanels: { position: "absolute", top: 45, bottom: 9, left: 51, right: 9, flexDirection: "row" },
-    filePane: { position: "relative", flex: 1, backgroundColor: "#1D1E21", borderRadius: 9, overflow: "hidden" },
-    filePaneLeft: { marginRight: 3 },
-    fileEntries: { position: "absolute", top: 0, left: 0, width: "100%", bottom: 36, overflow: "hidden" },
-    fileRow: { position: "absolute", left: 0, width: "100%", height: 30 },
-    fileEntryMain: { position: "absolute", top: 0, left: 0, width: "100%", height: 30 },
+    filePanels: { position: "absolute", top: 27, bottom: 0, left: 0, right: 0, flexDirection: "row" },
+    filePane: { position: "relative", flex: 1, overflow: "hidden" },
+    fileEntries: { position: "absolute", top: 0, left: 0, width: "100%", bottom: 30, overflow: "hidden" },
+    fileRow: { position: "absolute", left: 0, width: "100%", height: 27 },
+    fileEntryMain: { position: "absolute", top: 0, left: 0, width: "100%", height: 27 },
     fileEntrySelected: { backgroundColor: "#3474F0" },
     fileEntryFailed: { backgroundColor: "#4b252a" },
     fileEntryIconButton: { position: "absolute", top: 0, left: 3, width: 27, height: 27, alignItems: "center", justifyContent: "center" },
     fileEntryIcon: { width: 27, height: 27 },
-    fileName: { position: "absolute", top: 0, left: 36, right: 63, height: 27, color: "#e6e1e5", fontSize: 18, lineHeight: "27px" },
-    fileSize: { position: "absolute", top: 0, right: 9, width: 54, height: 27, color: "#a8adb8", fontSize: 15, lineHeight: "27px", textAlign: "right" },
+    fileColumns: { position: "absolute", top: 0, left: 36, right: 9, height: 27, flexDirection: "row" },
+    fileName: { position: "relative", flex: 1, minWidth: 0, height: 27, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", color: "#e6e1e5", fontSize: 18, lineHeight: "27px" },
+    fileDate: { position: "relative", minWidth: 0, height: 27, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", color: "#a8adb8", fontSize: 18, lineHeight: "27px", textAlign: "left" },
+    fileSize: { position: "relative", minWidth: 0, height: 27, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", color: "#a8adb8", fontSize: 18, lineHeight: "27px", textAlign: "right" },
     fileProgressTrack: { position: "absolute", bottom: 0, left: 0, width: "100%", height: 3, backgroundColor: "#2b2d31" },
     fileProgress: { position: "absolute", top: 0, left: 0, height: "100%", backgroundColor: "#3474F0" },
     fileProgressSuccess: { backgroundColor: "#55b879" },
     fileProgressFailed: { backgroundColor: "#d13438" },
-    fileTransfer: { position: "absolute", bottom: 0, left: 0, width: "100%", height: 33, alignItems: "center", justifyContent: "center" },
+    fileTransfer: { position: "absolute", bottom: 0, left: 0, width: "100%", height: 27, alignItems: "center", justifyContent: "center" },
     fileTransferReady: { backgroundColor: "#3474F0" },
     fileTransferText: { color: "#e6e1e5", fontSize: 18, lineHeight: "27px", textAlign: "center" },
     fileEvent: { position: "absolute", width: 3, height: 3, opacity: 0 }
@@ -519,8 +581,24 @@ const render = function () {
   const remoteFrame = classes => this.screenOn ? create("image", {
     staticClass: classes,
     attrs: { src: "http://127.0.0.1:999/frame?" + this.frame },
-    on: { load: event => this.schedule(!!event && event.success === false), error: () => this.schedule(true) }
+    on: {
+      load: event => this.schedule(!!event && event.success === false),
+      error: () => this.schedule(true),
+      touchstart: event => this.touchFrame(event, false),
+      touchmove: event => this.touchFrame(event, false),
+      touchend: event => this.touchFrame(event, true),
+      touchcancel: event => this.touchFrame(event, true)
+    }
   }) : create("div", { staticClass: classes });
+  const touchSurface = () => this.touchOn ? create("div", {
+    staticClass: ["touchSurface"],
+    on: {
+      touchstart: event => this.touchFrame(event, false),
+      touchmove: event => this.touchFrame(event, false),
+      touchend: event => this.touchFrame(event, true),
+      touchcancel: event => this.touchFrame(event, true)
+    }
+  }) : null;
   const icon = (value, classes) => create("div", {
     staticClass: classes,
     style: { backgroundImage: "url(" + value + ")", backgroundSize: "contain", backgroundRepeat: "no-repeat", backgroundPosition: "center" }
@@ -541,7 +619,11 @@ const render = function () {
   const toolStop = action => create("div", { staticClass: ["toolStop"], on: { click: action } }, [
     icon(icons.stop, ["toolBackIcon"])
   ]);
-  const shorten = (value, length) => value.length > length ? value.slice(0, length - 2) + ".." : value;
+  const date = value => {
+    if (!value) return "";
+    const timestamp = new Date(value * 1000);
+    return timestamp.getFullYear() + "/" + (timestamp.getMonth() + 1) + "/" + timestamp.getDate();
+  };
   const size = value => {
     const units = ["B", "KB", "MB", "GB"];
     let unit = 0;
@@ -551,9 +633,15 @@ const render = function () {
     }
     return value + units[unit];
   };
+  const details = entry => [date(entry.modified), entry.state >= 2 ? entry.progress + "%" : entry.directory ? "" : size(entry.size)];
+  const fileLayout = entries => entries.reduce((layout, entry) => {
+    const detail = details(entry);
+    return { date: Math.max(layout.date, detail[0].length * 9), size: Math.max(layout.size, detail[1].length * 9) };
+  }, { date: 0, size: 0 });
   if (this.view === "desktop") {
     return create("div", { key: "desktop", staticClass: ["root"] }, [
       remoteFrame(["desktop"]),
+      touchSurface(),
       create("div", { staticClass: ["toolToggle"], on: { click: () => this.showTools() } })
     ]);
   }
@@ -566,9 +654,9 @@ const render = function () {
         icon(icons.screen, ["toolItemIcon"]),
         text("显示", ["toolText"])
       ]),
-      create("div", { staticClass: ["toolItem", "toolMouse"].concat(this.mouseOn ? ["toolItemSelected"] : []), on: { click: () => this.toggleMouse() } }, [
-        icon(icons.mouse, ["toolItemIcon"]),
-        text("鼠标", ["toolText"])
+      create("div", { staticClass: ["toolItem", "toolMouse"].concat(this.mouseOn || this.touchOn ? ["toolItemSelected"] : []), on: { click: () => this.toggleMouse() } }, [
+        icon(this.touchOn ? icons.touch : icons.mouse, ["toolItemIcon"]),
+        text(this.touchOn ? "\u89e6\u63a7" : "\u9f20\u6807", ["toolText"])
       ]),
       create("div", { staticClass: ["toolItem", "toolKeyboard"], on: { click: () => this.showKeyboard() } }, [
         icon(icons.keyboard, ["toolItemIcon"]),
@@ -609,7 +697,7 @@ const render = function () {
       ])
     ]);
   }
-  const fileRow = (side, entry, index) => {
+  const fileRow = (side, entry, index, layout) => {
     var state = entry.state === 1 ? "fileEntrySelected" : entry.state === 3 ? "fileEntryFailed" : "";
     var primary = "open/" + side + "/" + index;
     var iconAction = "select/" + side + "/" + index;
@@ -617,13 +705,17 @@ const render = function () {
     if (entry.parent) iconAction = primary;
     var progress = entry.state >= 2 ? entry.progress : -1;
     var progressClass = entry.state === 2 ? "fileProgressSuccess" : entry.state === 3 ? "fileProgressFailed" : "";
+    var detail = details(entry);
     var contents = progress < 0 ? [] : [create("div", { staticClass: ["fileProgressTrack"] }, [
       create("div", { staticClass: ["fileProgress"].concat(progressClass ? [progressClass] : []), style: { width: progress + "%" } })
     ])];
-    contents.push(text(shorten(entry.name, entry.directory ? 24 : 18), ["fileName"]));
-    if (!entry.directory || progress >= 0) contents.push(text(progress < 0 ? size(entry.size) : progress + "%", ["fileSize"]));
+    contents.push(create("div", { staticClass: ["fileColumns"] }, [
+      text(entry.name, ["fileName"]),
+      text(detail[0], ["fileDate"], { width: layout.date }),
+      text(detail[1], ["fileSize"], { width: layout.size })
+    ]));
     return create("div", {
-      staticClass: ["fileRow"], style: { top: (index - this.fileOffset[side]) * 30 }
+      staticClass: ["fileRow"], style: { top: (index - this.fileOffset[side]) * 27 }
     }, [
       create("div", { staticClass: ["fileEntryMain"].concat(state ? [state] : []), on: { click: () => !this.fileScrolled && this.fileAction(primary) } }, contents),
       create("div", { staticClass: ["fileEntryIconButton"], on: { click: () => !this.fileScrolled && this.fileAction(iconAction) } }, [
@@ -637,33 +729,36 @@ const render = function () {
       staticClass: ["fileTransfer"].concat(ready ? ["fileTransferReady"] : []), on: { click: () => ready && this.fileAction(action) }
     }, [text(label, ["fileTransferText"])]);
   };
-  const list = (side, entries, action, label, left) => {
+  const list = (side, entries, action, label, layout) => {
     const offset = this.fileOffset[side];
     return create("div", {
-      staticClass: ["filePane"].concat(left ? ["filePaneLeft"] : []),
+      staticClass: ["filePane"],
       on: {
         touchstart: event => this.fileTouchStart(side, event),
         touchmove: event => this.fileTouchMove(side, event),
         touchend: event => this.fileTouchEnd(side, event)
       }
     }, [
-      create("div", { staticClass: ["fileEntries"] }, entries.slice(offset, offset + fileRows).map((entry, index) => fileRow(side, entry, offset + index))),
+      create("div", { staticClass: ["fileEntries"] }, entries.slice(offset, offset + fileRows).map((entry, index) => fileRow(side, entry, offset + index, layout))),
       transfer(side, action, label)
     ]);
   };
   const fileSession = this.fileSession;
   const fileRevision = this.fileState.revision;
+  const layout = fileLayout(this.fileState.pen.concat(this.fileState.windows));
   return create("div", { key: "files", staticClass: ["files"] }, [
     toolBack(() => this.showTools()),
     toolStop(() => this.stop()),
     create("image", { key: "file-event-" + fileSession + "-" + fileRevision, staticClass: ["fileEvent"], attrs: { src: "http://127.0.0.1:999/files/watch/" + fileRevision }, on: { load: () => this.fileChanged(fileSession), error: () => this.fileChanged(fileSession) } }),
-    create("div", { staticClass: ["fileRail"] }, [
-      create("div", { staticClass: ["fileTitle"] }, [text("\u672c\u5730", ["fileTitleText"])]),
-      create("div", { staticClass: ["fileTitle", "fileTitleLast"] }, [text("\u8fdc\u7aef", ["fileTitleText"])])
-    ]),
-    create("div", { staticClass: ["filePanels"] }, [
-      list("pen", this.fileState.pen, "transfer/push", "\u4f20\u8fdc\u7aef", true),
-      list("windows", this.fileState.windows, "transfer/pull", "\u4f20\u672c\u5730", false)
+    create("div", { staticClass: ["filePanel"] }, [
+      create("div", { staticClass: ["fileRail"] }, [
+        create("div", { staticClass: ["fileTitle"] }, [text("\u672c\u5730", ["fileTitleText"])]),
+        create("div", { staticClass: ["fileTitle"] }, [text("\u8fdc\u7aef", ["fileTitleText"])])
+      ]),
+      create("div", { staticClass: ["filePanels"] }, [
+        list("pen", this.fileState.pen, "transfer/push", "\u4f20\u8fdc\u7aef", layout),
+        list("windows", this.fileState.windows, "transfer/pull", "\u4f20\u672c\u5730", layout)
+      ])
     ])
   ]);
 };
