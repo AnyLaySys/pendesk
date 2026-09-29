@@ -35,12 +35,6 @@ function Get-MiniAppManifest {
     $manifest
 }
 
-function ConvertTo-WSLPath([string]$Path) {
-    $value = (& wsl.exe --exec wslpath -a $Path).Trim()
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    $value
-}
-
 function Require([string]$Path) {
     if (!(Test-Path -LiteralPath $Path -PathType Leaf)) { throw "Missing $Path" }
 }
@@ -128,7 +122,6 @@ function Install-Package([string]$Package) {
     $previous = Installed-App -Optional
     if ($previous) {
         Invoke-Pen "if [ ! -f '$($previous.data)/config' ] && [ -s '$($previous.slot)/config' ]; then mkdir -p '$($previous.data)'; cp '$($previous.slot)/config' '$($previous.data)/config'; chmod 600 '$($previous.data)/config'; fi" | Out-Null
-        Invoke-Pen "/bin/sh '$($previous.start)' stop" | Out-Null
     }
     Invoke-Pen 'touch /userdata/.disable_app_whitelist_clean && sync && test -f /userdata/.disable_app_whitelist_clean' | Out-Null
     $remote = "/tmp/pendesk-$PID.amr"
@@ -140,13 +133,6 @@ function Install-Package([string]$Package) {
         Invoke-Pen "rm -f '$remote'" | Out-Null
     }
     Write-Output 'Generic AMR installed. Existing runtime settings are retained; new devices need pairing and independent Tailscale authorization.'
-}
-
-function Build-Pdd {
-    $penSourceWSL = ConvertTo-WSLPath $penSource
-    $penBuildWSL = ConvertTo-WSLPath $penBuild
-    & wsl.exe --exec bash --noprofile --norc -c "aarch64-linux-gnu-gcc -std=c17 -O2 -Wall -Wextra -Werror -pthread -static '$penSourceWSL/pdd.c' '$penSourceWSL/cfg.c' '$penSourceWSL/io.c' '$penSourceWSL/link.c' '$penSourceWSL/input.c' '$penSourceWSL/input_control.c' '$penSourceWSL/input_devices.c' '$penSourceWSL/input_touch.c' '$penSourceWSL/video.c' '$penSourceWSL/media_receive.c' '$penSourceWSL/cam_device.c' '$penSourceWSL/cam_stream.c' '$penSourceWSL/audio.c' '$penSourceWSL/mic.c' '$penSourceWSL/preview.c' '$penSourceWSL/files.c' '$penSourceWSL/files_transport.c' '$penSourceWSL/files_panel.c' '$penSourceWSL/files_transfer.c' -o '$penBuildWSL/pdd'"
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
 function Fetch-Tailscale {
@@ -173,7 +159,7 @@ function Fetch-Tailscale {
     $extract = Temporary-Path 'tailscale'
     try {
         New-Item -ItemType Directory -Force $extract | Out-Null
-        tar --force-local -xf $archive -C $extract
+        tar -xf $archive -C $extract
         if ($LASTEXITCODE -ne 0) { throw 'Tailscale extraction failed' }
         foreach ($name in $hashes.Keys) {
             $source = Join-Path $extract "tailscale_${version}_arm64\$name"
@@ -185,39 +171,60 @@ function Fetch-Tailscale {
     }
 }
 
-function Build-MiniAppCode {
+function Build-LinuxArtifacts {
     $quickJS = Join-Path $state 'quickjs-2020-07-05'
     $archive = Join-Path $state 'quickjs-2020-07-05.tar.xz'
     $compiler = Join-Path $state 'qjscompile'
     if (!(Test-Path -LiteralPath (Join-Path $quickJS 'quickjs.c'))) {
         New-Item -ItemType Directory -Force $state | Out-Null
-        curl.exe -fL https://bellard.org/quickjs/quickjs-2020-07-05.tar.xz -o $archive
-        if ($LASTEXITCODE -ne 0) { throw 'QuickJS download failed' }
-        & wsl.exe --exec bash --noprofile --norc -c "tar -xf '$(ConvertTo-WSLPath $archive)' -C '$(ConvertTo-WSLPath $state)'"
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        if (!(Test-Path -LiteralPath $archive)) {
+            curl.exe -fL https://bellard.org/quickjs/quickjs-2020-07-05.tar.xz -o $archive
+            if ($LASTEXITCODE -ne 0) { throw 'QuickJS download failed' }
+        }
     }
-    $source = Join-Path $miniAppSource 'qjscompile.c'
-    $config = Join-Path $miniAppSource 'qjsconfig.h'
-    if (!(Test-Path -LiteralPath $compiler) -or (Get-Item -LiteralPath $compiler).LastWriteTime -lt (Get-Item -LiteralPath $source).LastWriteTime -or (Get-Item -LiteralPath $compiler).LastWriteTime -lt (Get-Item -LiteralPath $config).LastWriteTime) {
-        $miniAppSourceWSL = ConvertTo-WSLPath $miniAppSource
-        $quickJSWSL = ConvertTo-WSLPath $quickJS
-        $compilerWSL = ConvertTo-WSLPath $compiler
-        & wsl.exe --exec bash --noprofile --norc -c "cc -O2 -Wno-discarded-qualifiers -I '$quickJSWSL' -include '$miniAppSourceWSL/qjsconfig.h' -o '$compilerWSL' '$miniAppSourceWSL/qjscompile.c' '$quickJSWSL/quickjs.c' '$quickJSWSL/cutils.c' '$quickJSWSL/libregexp.c' '$quickJSWSL/libunicode.c' '$quickJSWSL/libbf.c' -lm -ldl -lpthread"
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    }
-        $stage = Temporary-Path 'qjs'
+    $stage = Temporary-Path 'qjs'
     try {
         New-Item -ItemType Directory -Force $stage | Out-Null
         Copy-Item (Join-Path $miniAppSource 'app.js') -Destination $stage
         $index = Get-Content (Join-Path $miniAppSource 'index.js') -Raw -Encoding UTF8
         $appID = [string](Get-MiniAppManifest).appid
         if (!$index.Contains('__APPID__')) { throw 'The miniapp source is invalid' }
-        [IO.File]::WriteAllText((Join-Path $stage 'index.js'), $index.Replace('__APPID__', $appID), [Text.UTF8Encoding]::new($false))
-        $stageWSL = ConvertTo-WSLPath $stage
-        $compilerWSL = ConvertTo-WSLPath $compiler
-    $penBuildWSL = ConvertTo-WSLPath $penBuild
-    & wsl.exe --exec bash --noprofile --norc -c "'$compilerWSL' '$stageWSL/app.js' '$penBuildWSL/app.js.bin' && '$compilerWSL' '$stageWSL/index.js' '$penBuildWSL/index.js.bin' module"
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        [IO.File]::WriteAllText(
+            (Join-Path $stage 'index.js'),
+            $index.Replace('__APPID__', $appID),
+            [Text.UTF8Encoding]::new($false)
+        )
+        $script = @'
+set -eu
+pen=$(wslpath -a "$1")
+out=$(wslpath -a "$2")
+quickjs=$(wslpath -a "$3")
+archive=$(wslpath -a "$4")
+state=$(wslpath -a "$5")
+compiler=$(wslpath -a "$6")
+miniapp=$(wslpath -a "$7")
+stage=$(wslpath -a "$8")
+if [ ! -f "$quickjs/quickjs.c" ]; then
+    tar -xf "$archive" -C "$state"
+fi
+cc -O2 -Wno-discarded-qualifiers -I "$quickjs" \
+    -include "$miniapp/qjsconfig.h" -o "$compiler" \
+    "$miniapp/qjscompile.c" "$quickjs/quickjs.c" "$quickjs/cutils.c" \
+    "$quickjs/libregexp.c" "$quickjs/libunicode.c" "$quickjs/libbf.c" \
+    -lm -ldl -lpthread
+aarch64-linux-gnu-gcc -std=c17 -O2 -Wall -Wextra -Werror -pthread -static \
+    "$pen/pdd.c" "$pen/cfg.c" "$pen/io.c" "$pen/link.c" "$pen/input.c" \
+    "$pen/input_control.c" "$pen/input_devices.c" "$pen/input_touch.c" \
+    "$pen/video.c" "$pen/media_receive.c" "$pen/cam_device.c" "$pen/cam_stream.c" \
+    "$pen/audio.c" "$pen/mic.c" "$pen/preview.c" "$pen/files.c" \
+    "$pen/files_transport.c" "$pen/files_panel.c" "$pen/files_transfer.c" \
+    -o "$out/pdd"
+"$compiler" "$stage/app.js" "$out/app.js.bin"
+"$compiler" "$stage/index.js" "$out/index.js.bin" module
+'@
+        $script = $script.Replace("`r`n", "`n").Replace("`r", "")
+        & wsl.exe --exec bash --noprofile --norc -c $script pendesk $penSource $penBuild $quickJS $archive $state $compiler $miniAppSource $stage
+        if ($LASTEXITCODE -ne 0) { throw "WSL build failed with exit code $LASTEXITCODE" }
     } finally {
         Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction Ignore
     }
@@ -229,9 +236,8 @@ function Build {
     & cargo build --release --target-dir $target --manifest-path (Join-Path $root 'Cargo.toml')
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     Copy-Item -LiteralPath (Join-Path $target 'release\pendesk.exe') -Destination $hostExecutable -Force
-    Build-Pdd
     Fetch-Tailscale
-    Build-MiniAppCode
+    Build-LinuxArtifacts
     Build-Package $package
     & $hostExecutable restart
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

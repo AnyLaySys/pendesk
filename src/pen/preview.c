@@ -43,10 +43,11 @@ static void drain(int fd) {
 }
 
 enum request {
-    FRAME, ACTION
+    FRAME, ACTION, WATCH
 };
 
-static int accept_request(int listener_fd, enum request *kind, char *action, size_t action_size) {
+static int accept_request(int listener_fd, enum request *kind, char *action, size_t action_size,
+                          uint64_t *revision) {
     char request[4096];
     size_t length = 0;
     int fd;
@@ -66,6 +67,16 @@ static int accept_request(int listener_fd, enum request *kind, char *action, siz
             *kind = FRAME;
             return fd;
         }
+        if (!strncmp(request, "GET /files/watch/", 17)) {
+            char *end = strchr(request + 17, ' ');
+            if (!end) break;
+            *end = '\0';
+            errno = 0;
+            *revision = strtoull(request + 17, &end, 10);
+            if (errno || !request[17] || *end) break;
+            *kind = WATCH;
+            return fd;
+        }
         if (!strncmp(request, "GET /files/", 11)) {
             char *end = strchr(request + 11, ' ');
             size_t size = end ? (size_t)(end - request - 11) : 0;
@@ -80,6 +91,25 @@ static int accept_request(int listener_fd, enum request *kind, char *action, siz
     }
     close(fd);
     return -1;
+}
+
+static int send_file_event(struct files *files, int fd, uint64_t revision) {
+    static const uint8_t image[] = {
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49,
+            0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06,
+            0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0b, 0x49, 0x44,
+            0x41, 0x54, 0x78, 0x9c, 0x63, 0x60, 0x00, 0x02, 0x00, 0x00, 0x05, 0x00, 0x01,
+            0x7a, 0x5e, 0xab, 0x3f, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
+            0x42, 0x60, 0x82};
+    char header[192];
+    int length;
+    if (files_state_version(files) == revision) return 0;
+    length = snprintf(header, sizeof(header),
+                      "HTTP/1.0 200 OK\r\nContent-Type: image/png\r\nContent-Length: %zu\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+                      sizeof(image));
+    return length > 0 && (size_t) length < sizeof(header) &&
+           io_write_all(fd, header, (size_t) length) == 0 &&
+           io_write_all(fd, image, sizeof(image)) == 0 ? 1 : -1;
 }
 
 static int send_frame(struct preview *preview, int fd, uint64_t *delivered) {
@@ -105,10 +135,13 @@ static int send_frame(struct preview *preview, int fd, uint64_t *delivered) {
 static void *serve(void *argument) {
     struct preview *preview = argument;
     uint64_t delivered = 0;
+    uint64_t watch_revision = 0;
     int pending = -1;
+    int pending_watch = -1;
     while (alive) {
         char action[64];
         enum request kind;
+        uint64_t revision = 0;
         struct pollfd events[2] = {{.fd = preview->listener, .events = POLLIN},
                                    {.fd = preview->event[0], .events = POLLIN}};
         int fd;
@@ -116,16 +149,28 @@ static void *serve(void *argument) {
             close(pending);
             pending = -1;
         }
+        if (pending_watch >= 0 && send_file_event(preview->files, pending_watch, watch_revision) != 0) {
+            close(pending_watch);
+            pending_watch = -1;
+        }
         if (poll(events, 2, -1) <= 0) continue;
         if (events[1].revents & POLLIN) drain(preview->event[0]);
         if (!(events[0].revents & POLLIN) ||
-            (fd = accept_request(preview->listener, &kind, action, sizeof(action))) < 0)
+            (fd = accept_request(preview->listener, &kind, action, sizeof(action), &revision)) < 0)
             continue;
         if (kind == ACTION) {
             static const char response[] = "HTTP/1.0 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
             files_submit(preview->files, action);
             io_write_all(fd, response, sizeof(response) - 1);
             close(fd);
+        } else if (kind == WATCH) {
+            if (pending_watch >= 0) close(pending_watch);
+            pending_watch = fd;
+            watch_revision = revision;
+            if (send_file_event(preview->files, pending_watch, watch_revision) != 0) {
+                close(pending_watch);
+                pending_watch = -1;
+            }
         } else if (pending >= 0) close(fd);
         else {
             pending = fd;
@@ -136,20 +181,26 @@ static void *serve(void *argument) {
         }
     }
     if (pending >= 0) close(pending);
+    if (pending_watch >= 0) close(pending_watch);
     return NULL;
 }
 
 int preview_open(struct preview *preview, const struct cfg *cfg) {
     *preview = (struct preview) {.mutex = PTHREAD_MUTEX_INITIALIZER, .listener = -1, .event = {-1,
                                                                                                -1}};
-    preview->files = files_new(cfg->host, cfg->port, cfg->socks_host, cfg->socks_port, cfg->token);
-    if (!preview->files || pipe2(preview->event, O_CLOEXEC | O_NONBLOCK) != 0 ||
+    if (pipe2(preview->event, O_CLOEXEC | O_NONBLOCK) != 0) {
+        pthread_mutex_destroy(&preview->mutex);
+        return -1;
+    }
+    preview->files = files_new(cfg->host, cfg->port, cfg->socks_host, cfg->socks_port, cfg->token,
+                               preview->event[1]);
+    if (!preview->files ||
         (preview->listener = listener()) < 0 ||
         pthread_create(&preview->thread, NULL, serve, preview) != 0) {
         if (preview->listener >= 0) close(preview->listener);
+        files_free(preview->files);
         if (preview->event[0] >= 0) close(preview->event[0]);
         if (preview->event[1] >= 0) close(preview->event[1]);
-        files_free(preview->files);
         pthread_mutex_destroy(&preview->mutex);
         return -1;
     }
@@ -182,9 +233,9 @@ void preview_close(struct preview *preview) {
     notify(preview);
     if (preview->thread_started) pthread_join(preview->thread, NULL);
     if (preview->listener >= 0) close(preview->listener);
+    files_free(preview->files);
     if (preview->event[0] >= 0) close(preview->event[0]);
     if (preview->event[1] >= 0) close(preview->event[1]);
-    files_free(preview->files);
     free(preview->frame);
     pthread_mutex_destroy(&preview->mutex);
 }

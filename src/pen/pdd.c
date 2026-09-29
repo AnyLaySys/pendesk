@@ -37,7 +37,6 @@ int main(int argc, char **argv) {
     struct link link;
     struct video video = {.association = -1, .fd = -1};
     close_inherited();
-    if (argc == 4 && !strcmp(argv[1], "--input")) return input_send_control(argv[2], argv[3]);
     if (argc != 3 || (strcmp(argv[1], "--config") && strcmp(argv[1], "--check-config")) ||
         cfg_load(argv[2], &cfg) != 0)
         return 1;

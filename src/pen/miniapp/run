@@ -1,15 +1,19 @@
 #!/bin/sh
+bin=${0%/*}
+slot=${bin%/*}
+package=${slot%/*}
+data="$package/data"
+if [ "${1:-}" = input ]; then
+    if [ -p "$data/input.fifo" ]; then
+        exec 3<> "$data/input.fifo"
+        printf '%b' "$2" >&3
+        exec 3>&-
+    fi
+    exit
+fi
 set -eu
 umask 077
-bin=$(CDPATH= cd "$(dirname "$0")" && pwd)
-slot=$(dirname "$bin")
-package=$(dirname "$slot")
-data="$package/data"
 config="$data/config"
-if [ "${1:-}" = input ]; then
-    chmod 755 "$bin/pdd"
-    exec "$bin/pdd" --input "$data/input.sock" "$2"
-fi
 if [ "${1:-}" = files ]; then
     action=${2:-}
     case "$action" in
@@ -131,7 +135,7 @@ run() {
 if [ "${1:-}" = stop ]; then
     stop "$data/pdd.pid"
     stop "$data/tailscaled.pid"
-    rm -f "$data/tailscaled.sock" "$data/input.sock"
+    rm -f "$data/tailscaled.sock" "$data/input.fifo"
     exit
 fi
 mkdir -p "$data"

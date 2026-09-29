@@ -108,6 +108,6 @@ int cfg_control_path(char *path, size_t size, const char *config) {
     *separator = '\0';
     if (!(separator = strrchr(package, '/'))) return -1;
     *separator = '\0';
-    length = snprintf(path, size, "%s/data/input.sock", package);
+    length = snprintf(path, size, "%s/data/input.fifo", package);
     return length >= 0 && (size_t) length < size ? 0 : -1;
 }

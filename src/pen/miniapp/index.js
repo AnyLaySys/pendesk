@@ -18,8 +18,8 @@ const icons = {
 };
 
 function control(bytes, ordered = false) {
-  const packet = bytes.map(value => ("0" + (value & 255).toString(16)).slice(-2)).join("");
-  const command = "/bin/sh -lc " + quote(RUN) + " -- input " + packet + " >/dev/null 2>&1";
+  const packet = bytes.map(value => "\\" + ("00" + (value & 255).toString(8)).slice(-3)).join("");
+  const command = "/bin/sh -lc " + quote(RUN) + " -- input " + quote(packet) + " >/dev/null 2>&1";
   native.execShell(ordered ? command : command + " &");
 }
 
@@ -44,11 +44,11 @@ const shifted = {
 };
 const arrows = { Left: "\u2190", Up: "\u2191", Right: "\u2192", Down: "\u2193" };
 const keyboardWidth = 15;
-const fileRows = 8;
-const fileVisible = 7;
-const fileWidth = 457;
-const padX = 65535 / 936;
-const padY = 65535 / 256;
+const fileRows = 6;
+const gestureThreshold = 9;
+const mouseSensitivityX = 70;
+const mouseSensitivityY = 256;
+const touchDistance = (x, y) => Math.floor(Math.abs(x) > Math.abs(y) ? Math.abs(x) + Math.abs(y) / 2 : Math.abs(y) + Math.abs(x) / 2);
 const key = (label, span = 1) => ({ label, span });
 const close = (span = 1) => ({ close: true, span });
 const gap = (span = 1) => ({ span });
@@ -83,7 +83,7 @@ const script = {
     } catch {}
     return {
       active: true, ready: false, frame: Date.now(), job: null, guard: null, view: "desktop", pad: null, held: [], fileTouch: null, fileScrolled: false, audioOn: false, screenOn: false, mouseOn: false, micOn: false, cameraOn: false,
-      fileState: { pen: [], windows: [], transfer: 0, progress: 0 }, fileOffset: { pen: 0, windows: 0 }, fileWatch: null,
+      fileState: { pen: [], windows: [], revision: 0 }, fileOffset: { pen: 0, windows: 0 }, fileSession: 0,
       caps: false, modifiers: { Shift: false, Ctrl: false, Win: false, Alt: false }
     };
   },
@@ -105,9 +105,9 @@ const script = {
       if (!this.active || !this.screenOn || (this.view !== "desktop" && this.view !== "keyboard") || this.job !== null) return;
       if (failed) {
         this.ready = false;
-        state(this.view === "keyboard", false, this.view !== "desktop" || !this.mouseOn, this.micOn);
+        state(this.view === "keyboard", false, !this.mouseOn, this.micOn);
       } else if (!this.ready) {
-        state(this.view === "keyboard", false, this.view !== "desktop" || !this.mouseOn, this.micOn);
+        state(this.view === "keyboard", false, !this.mouseOn, this.micOn);
         this.ready = true;
       }
       this.job = setTimeout(() => {
@@ -172,7 +172,7 @@ const script = {
     },
     toggleMouse() {
       this.mouseOn = !this.mouseOn;
-      state(true, true, true, this.micOn);
+      state(true, true, !this.mouseOn, this.micOn);
     },
     releaseKeys() {
       const packet = [];
@@ -195,12 +195,13 @@ const script = {
     showKeyboard() {
       this.view = "keyboard";
       if (this.screenOn) this.frame++;
-      state(true, !this.screenOn, true, this.micOn);
+      state(true, !this.screenOn, !this.mouseOn, this.micOn);
     },
     showFiles() {
       this.view = "files";
+      this.fileSession++;
       this.fileOffset.pen = this.fileOffset.windows = 0;
-      this.fileState = { pen: [], windows: [], transfer: 0, progress: 0 };
+      this.fileState = { pen: [], windows: [], revision: 0 };
       state(true, true, true, this.micOn);
       this.fileAction("reset");
     },
@@ -216,25 +217,12 @@ const script = {
       if (action.indexOf("open/windows/") === 0) this.fileOffset.windows = 0;
       if (action.indexOf("transfer/") === 0) {
         const side = action === "transfer/push" ? "pen" : "windows";
-        const selected = this.fileState[side].filter(entry => entry.state === 1).map(entry => entry.name);
-        if (!selected.length) return;
-        this.fileWatch = { transfer: side === "pen" ? 1 : 2, side, selected, started: false };
-        native.execShell("/bin/sh -lc " + quote(RUN) + " -- files " + action);
-        return this.watchFiles();
+        if (!this.fileState[side].some(entry => entry.state === 1)) return;
       }
       native.execShell("/bin/sh -lc " + quote(RUN) + " -- files " + action);
-      [200, 1200].forEach(delay => setTimeout(() => {
-        if (this.view === "files") this.loadFiles();
-      }, delay));
     },
-    watchFiles() {
-      this.loadFiles().then(() => {
-        const watch = this.fileWatch;
-        if (!watch) return;
-        if (this.fileState.transfer === watch.transfer) watch.started = true;
-        else if (watch.started || watch.selected.some(name => this.fileState[watch.side].some(entry => entry.name === name && entry.state > 1))) this.fileWatch = null;
-        if (this.view === "files" && this.fileWatch) setTimeout(() => this.watchFiles(), 100);
-      });
+    fileChanged(session) {
+      if (this.view === "files" && session === this.fileSession) this.loadFiles();
     },
     loadFiles() {
       return fs.readFile("/tmp/pendesk-files.json", "utf8").then(text => {
@@ -255,25 +243,25 @@ const script = {
       this.fileTouch = { side, y: this.fileY(event), offset: this.fileOffset[side] };
     },
     fileScroll(side, offset) {
-      this.fileOffset[side] = Math.max(0, Math.min(Math.max(0, this.fileState[side].length - fileVisible), offset));
+      this.fileOffset[side] = Math.max(0, Math.min(Math.max(0, this.fileState[side].length - fileRows), offset));
     },
     fileTouchMove(side, event) {
       const touch = this.fileTouch;
       if (!touch || touch.side !== side) return;
       const distance = touch.y - this.fileY(event);
-      if (Math.abs(distance) < 6) return;
+      if (Math.abs(distance) < 9) return;
       this.fileScrolled = true;
-      this.fileScroll(side, touch.offset + Math.round(distance / 27));
+      this.fileScroll(side, touch.offset + Math.round(distance / 33));
     },
     fileTouchEnd(side, event) {
       const touch = this.fileTouch;
       this.fileTouch = null;
       if (!touch || touch.side !== side) return;
       const distance = touch.y - this.fileY(event);
-      if (Math.abs(distance) >= 6) {
+      if (Math.abs(distance) >= 9) {
         this.fileScrolled = true;
-        this.fileScroll(side, touch.offset + Math.round(distance / 27));
-        setTimeout(() => { this.fileScrolled = false; }, 80);
+        this.fileScroll(side, touch.offset + Math.round(distance / 33));
+        setTimeout(() => { this.fileScrolled = false; }, 90);
       }
     },
     padTouches(event) {
@@ -312,6 +300,14 @@ const script = {
       if (!changed.length) return;
       if (this.pad) {
         const pad = this.pad;
+        if (touches.length > 1 && pad.max < 2) {
+          pad.started = Date.now();
+          pad.moved = false;
+          if (pad.dragging) {
+            control(button(1, false), true);
+            pad.dragging = false;
+          }
+        }
         pad.max = Math.max(pad.max, touches.length);
         if (touches.length > 1) {
           const point = this.padFocus(touches);
@@ -323,14 +319,14 @@ const script = {
         return;
       }
       const point = this.padPosition(changed[0]);
-      const pad = { id: point.id, x: point.x, y: point.y, originX: point.x, originY: point.y, max: touches.length || 1, moved: false, dragging: false, dx: 0, dy: 0, wheel: 0, press: null, timer: null };
+      const pad = { id: point.id, x: point.x, y: point.y, originX: point.x, originY: point.y, started: Date.now(), max: touches.length || 1, moved: false, dragging: false, dx: 0, dy: 0, wheel: 0, press: null, timer: null };
       this.pad = pad;
       pad.press = setTimeout(() => {
         if (this.pad === pad && !pad.moved && pad.max === 1) {
           pad.dragging = true;
-          control(button(1, true));
+          control(button(1, true), true);
         }
-      }, 400);
+      }, 300);
     },
     padQueue(pad) {
       if (pad.timer !== null) return;
@@ -346,14 +342,14 @@ const script = {
       const dy = pad.dy;
       const scroll = pad.wheel;
       pad.dx = pad.dy = pad.wheel = 0;
-      const packet = dx || dy ? move(dy * padY, -dx * padX) : [];
+      const packet = dx || dy ? move(dy * mouseSensitivityY, -dx * mouseSensitivityX) : [];
       if (scroll) packet.push(...wheel(scroll));
       return packet;
     },
     padMove(event) {
       const pad = this.pad;
       const touches = this.padTouches(event);
-      if (!pad || !touches.length) return;
+      if (!this.mouseOn || !pad || !touches.length) return;
       pad.max = Math.max(pad.max, touches.length);
       const point = touches.length > 1 ? this.padFocus(touches) : this.padPoint(touches, pad.id);
       if (!point) return;
@@ -363,14 +359,18 @@ const script = {
       pad.y = point.y;
       if (!dx && !dy) return;
       this.poke();
-      if (!pad.moved && Math.abs(point.x - pad.originX) + Math.abs(point.y - pad.originY) > 4) {
+      const wasMoved = pad.moved;
+      const travel = touchDistance(point.x - pad.originX, point.y - pad.originY);
+      if (!pad.moved && (touches.length > 1 ? travel >= gestureThreshold : travel > 3)) {
         pad.moved = true;
         if (pad.press !== null) clearTimeout(pad.press);
         pad.press = null;
       }
       if (touches.length > 1) {
-        pad.wheel += dy * 8;
-        this.padQueue(pad);
+        if (pad.moved) {
+          pad.wheel += (wasMoved ? dy : point.y - pad.originY) * 8;
+          this.padQueue(pad);
+        }
       } else {
         pad.dx += dx;
         pad.dy += dy;
@@ -385,8 +385,8 @@ const script = {
       if (pad.timer !== null) clearTimeout(pad.timer);
       const packet = this.padPacket(pad);
       if (pad.dragging) packet.push(...button(1, false));
-      else if (click && !pad.moved) packet.push(...button(pad.max > 1 ? 2 : 1, true), ...button(pad.max > 1 ? 2 : 1, false));
-      if (packet.length) { this.poke(); control(packet); }
+      else if (click && !pad.moved && Date.now() - pad.started < 300) packet.push(...button(pad.max > 1 ? 2 : 1, true), ...button(pad.max > 1 ? 2 : 1, false));
+      if (packet.length) { this.poke(); control(packet, pad.dragging || (click && !pad.moved)); }
     },
     padEnd(event) {
       const pad = this.pad;
@@ -465,46 +465,49 @@ const style = {
     desktop: { width: "100%", height: "100%", position: "absolute", top: 0, left: 0 },
     toolToggle: { position: "absolute", bottom: 9, right: 9, width: 27, height: 27, borderRadius: 14, backgroundColor: "transparent" },
     tools: { width: "100%", height: "100%", position: "relative" },
-    toolRail: { position: "absolute", top: 9, left: 45, right: 9, height: 27, flexDirection: "row" },
-    toolItem: { position: "relative", height: 27, flex: 1, marginRight: 3, flexDirection: "row", alignItems: "center", justifyContent: "center", backgroundColor: "#191B21", borderRadius: 3 },
+    toolRail: { position: "absolute", top: 9, left: 51, right: 9, height: 33, flexDirection: "row" },
+    toolItem: { position: "relative", height: 33, flex: 1, marginRight: 3, flexDirection: "row", alignItems: "center", justifyContent: "center", backgroundColor: "#1D1E21", borderRadius: 9 },
+    toolItemSelected: { backgroundColor: "#3474F0" },
     toolPower: { marginRight: 0 },
-    toolText: { position: "relative", width: 36, height: 27, color: "#d9e1e8", fontSize: 18, lineHeight: "27px", textAlign: "center" },
-    toolTextOn: { color: "#0078d4" },
-    toolBack: { position: "absolute", top: 9, left: 9, width: 27, height: 27, alignItems: "center", justifyContent: "center" },
-    toolStop: { position: "absolute", bottom: 9, left: 9, width: 27, height: 27, alignItems: "center", justifyContent: "center" },
+    toolText: { position: "relative", width: 36, height: 27, color: "#e6e1e5", fontSize: 18, lineHeight: "27px", textAlign: "center" },
+    toolBack: { position: "absolute", top: 9, left: 9, width: 33, height: 33, alignItems: "center", justifyContent: "center", backgroundColor: "#1D1E21", borderRadius: 9 },
+    toolStop: { position: "absolute", bottom: 9, left: 9, width: 33, height: 33, alignItems: "center", justifyContent: "center", backgroundColor: "#1D1E21", borderRadius: 9 },
     toolBackIcon: { width: 27, height: 27 },
     toolItemIcon: { width: 27, height: 27, marginRight: 3 },
     keyboard: { position: "absolute", bottom: 0, left: 0, width: "100%", height: "100%" },
-    keyArea: { position: "absolute", top: 0, left: 126, width: 684, height: "100%", flexDirection: "column" },
-    touchPad: { position: "absolute", top: 0, width: 126, height: "100%", backgroundColor: "transparent" },
+    keyArea: { position: "absolute", top: 0, left: "13.5%", width: "73%", height: "100%", flexDirection: "column" },
+    touchPad: { position: "absolute", top: 0, width: "13.5%", height: "100%", backgroundColor: "transparent" },
     touchPadLeft: { left: 0 },
-    touchPadRight: { left: 810 },
+    touchPadRight: { right: 0 },
     keyRow: { flex: 1, position: "relative" },
     button: { position: "absolute", top: 0, height: "100%", margin: 0, alignItems: "center", justifyContent: "center" },
     label: { color: "#77767b", opacity: 0.6, fontSize: 18, textAlign: "center" },
     selectedLabel: { color: "#a8c7fa", opacity: 1 },
     files: { width: "100%", height: "100%", position: "relative" },
-    fileDevice: { position: "absolute", top: 9, width: fileWidth, color: "#f4f6f8", fontSize: 18, textAlign: "center" },
-    filePenTitle: { left: 9 },
-    fileWindowsTitle: { left: 469 },
-    fileList: { position: "absolute", top: 36, bottom: 3, width: fileWidth, backgroundColor: "#252a32", borderRadius: 3, overflow: "hidden" },
-    fileEntries: { position: "absolute", top: 0, left: 0, width: fileWidth, bottom: 27, overflow: "hidden" },
-    filePen: { left: 9 },
-    fileWindows: { left: 469 },
-    fileRow: { position: "absolute", left: 0, width: fileWidth, height: 27 },
-    fileEntryMain: { position: "absolute", top: 0, left: 0, width: fileWidth, height: 27 },
-    fileEntryIconButton: { position: "absolute", top: 0, left: 6, width: 27, height: 27, alignItems: "center", justifyContent: "center" },
+    fileRail: { position: "absolute", top: 9, left: 51, right: 9, height: 33, flexDirection: "row" },
+    fileTitle: { position: "relative", height: 33, flex: 1, marginRight: 3, alignItems: "center", justifyContent: "center", backgroundColor: "#1D1E21", borderRadius: 9 },
+    fileTitleLast: { marginRight: 0 },
+    fileTitleText: { color: "#e6e1e5", fontSize: 18, lineHeight: "27px", textAlign: "center" },
+    filePanels: { position: "absolute", top: 45, bottom: 9, left: 51, right: 9, flexDirection: "row" },
+    filePane: { position: "relative", flex: 1, backgroundColor: "#1D1E21", borderRadius: 9, overflow: "hidden" },
+    filePaneLeft: { marginRight: 3 },
+    fileEntries: { position: "absolute", top: 0, left: 0, width: "100%", bottom: 36, overflow: "hidden" },
+    fileRow: { position: "absolute", left: 0, width: "100%", height: 30 },
+    fileEntryMain: { position: "absolute", top: 0, left: 0, width: "100%", height: 30 },
+    fileEntrySelected: { backgroundColor: "#3474F0" },
+    fileEntryFailed: { backgroundColor: "#4b252a" },
+    fileEntryIconButton: { position: "absolute", top: 0, left: 3, width: 27, height: 27, alignItems: "center", justifyContent: "center" },
     fileEntryIcon: { width: 27, height: 27 },
-    fileName: { position: "absolute", top: 0, left: 42, height: 27, color: "#f0f3f7", fontSize: 18, lineHeight: "27px" },
-    fileSelected: { color: "#0078d4" },
-    fileSuccess: { color: "#107c10" },
-    fileFailed: { color: "#d13438" },
-    fileSize: { position: "absolute", top: 0, left: fileWidth - 62, width: 54, height: 27, color: "#8993a0", fontSize: 18, lineHeight: "27px", textAlign: "right" },
-    fileTransfer: { position: "absolute", bottom: 0, left: 0, width: fileWidth, height: 27, overflow: "hidden", flexDirection: "row", alignItems: "center", justifyContent: "center" },
-    fileProgress: { position: "absolute", top: 0, left: 0, height: "100%", backgroundColor: "#0078d4" },
-    filePush: { backgroundColor: "#173a58" },
-    filePull: { backgroundColor: "#173f49" },
-    fileTransferText: { color: "#f4f6f8", fontSize: 18 }
+    fileName: { position: "absolute", top: 0, left: 36, right: 63, height: 27, color: "#e6e1e5", fontSize: 18, lineHeight: "27px" },
+    fileSize: { position: "absolute", top: 0, right: 9, width: 54, height: 27, color: "#a8adb8", fontSize: 15, lineHeight: "27px", textAlign: "right" },
+    fileProgressTrack: { position: "absolute", bottom: 0, left: 0, width: "100%", height: 3, backgroundColor: "#2b2d31" },
+    fileProgress: { position: "absolute", top: 0, left: 0, height: "100%", backgroundColor: "#3474F0" },
+    fileProgressSuccess: { backgroundColor: "#55b879" },
+    fileProgressFailed: { backgroundColor: "#d13438" },
+    fileTransfer: { position: "absolute", bottom: 0, left: 0, width: "100%", height: 33, alignItems: "center", justifyContent: "center" },
+    fileTransferReady: { backgroundColor: "#3474F0" },
+    fileTransferText: { color: "#e6e1e5", fontSize: 18, lineHeight: "27px", textAlign: "center" },
+    fileEvent: { position: "absolute", width: 3, height: 3, opacity: 0 }
   }
 };
 
@@ -549,39 +552,39 @@ const render = function () {
     return value + units[unit];
   };
   if (this.view === "desktop") {
-    return create("div", { staticClass: ["root"] }, [
+    return create("div", { key: "desktop", staticClass: ["root"] }, [
       remoteFrame(["desktop"]),
       create("div", { staticClass: ["toolToggle"], on: { click: () => this.showTools() } })
     ]);
   }
   if (this.view === "tools") {
-    return create("div", { staticClass: ["tools"] }, [
+    return create("div", { key: "tools", staticClass: ["tools"] }, [
       toolBack(() => this.showDesktop()),
       toolStop(() => this.stop()),
       create("div", { staticClass: ["toolRail"] }, [
-      create("div", { staticClass: ["toolItem", "toolScreen"], on: { click: () => this.toggleScreen() } }, [
+      create("div", { staticClass: ["toolItem", "toolScreen"].concat(this.screenOn ? ["toolItemSelected"] : []), on: { click: () => this.toggleScreen() } }, [
         icon(icons.screen, ["toolItemIcon"]),
-        text("显示", ["toolText"].concat(this.screenOn ? ["toolTextOn"] : []))
+        text("显示", ["toolText"])
       ]),
-      create("div", { staticClass: ["toolItem", "toolMouse"], on: { click: () => this.toggleMouse() } }, [
+      create("div", { staticClass: ["toolItem", "toolMouse"].concat(this.mouseOn ? ["toolItemSelected"] : []), on: { click: () => this.toggleMouse() } }, [
         icon(icons.mouse, ["toolItemIcon"]),
-        text("鼠标", ["toolText"].concat(this.mouseOn ? ["toolTextOn"] : []))
+        text("鼠标", ["toolText"])
       ]),
       create("div", { staticClass: ["toolItem", "toolKeyboard"], on: { click: () => this.showKeyboard() } }, [
         icon(icons.keyboard, ["toolItemIcon"]),
         text("键盘", ["toolText"])
       ]),
-      create("div", { staticClass: ["toolItem", "toolCamera"], on: { click: () => this.toggleCamera() } }, [
+      create("div", { staticClass: ["toolItem", "toolCamera"].concat(this.cameraOn ? ["toolItemSelected"] : []), on: { click: () => this.toggleCamera() } }, [
         icon(icons.camera, ["toolItemIcon"]),
-        text("录像", ["toolText"].concat(this.cameraOn ? ["toolTextOn"] : []))
+        text("录像", ["toolText"])
       ]),
-      create("div", { staticClass: ["toolItem", "toolMic"], on: { click: () => this.toggleMic() } }, [
+      create("div", { staticClass: ["toolItem", "toolMic"].concat(this.micOn ? ["toolItemSelected"] : []), on: { click: () => this.toggleMic() } }, [
         icon(icons.mic, ["toolItemIcon"]),
-        text("录音", ["toolText"].concat(this.micOn ? ["toolTextOn"] : []))
+        text("录音", ["toolText"])
       ]),
-      create("div", { staticClass: ["toolItem", "toolSound"], on: { click: () => this.toggleAudio() } }, [
+      create("div", { staticClass: ["toolItem", "toolSound"].concat(this.audioOn ? ["toolItemSelected"] : []), on: { click: () => this.toggleAudio() } }, [
         icon(icons.sound, ["toolItemIcon"]),
-        text("声音", ["toolText"].concat(this.audioOn ? ["toolTextOn"] : []))
+        text("声音", ["toolText"])
       ]),
       create("div", { staticClass: ["toolItem", "toolFiles"], on: { click: () => this.showFiles() } }, [
         icon(icons.folder, ["toolItemIcon"]),
@@ -595,7 +598,7 @@ const render = function () {
     ]);
   }
   if (this.view === "keyboard") {
-    return create("div", { staticClass: ["root"] }, [
+    return create("div", { key: "keyboard", staticClass: ["root"] }, [
       remoteFrame(["desktop"]),
       create("div", { staticClass: ["keyboard"] }, [
         create("div", { staticClass: ["touchPad", "touchPadLeft"], on: { touchstart: event => this.padStart(event), touchmove: event => this.padMove(event), touchend: event => this.padEnd(event), touchcancel: () => this.finishPad(false) } }),
@@ -607,38 +610,37 @@ const render = function () {
     ]);
   }
   const fileRow = (side, entry, index) => {
-    var state = entry.state === 1 ? "fileSelected" : entry.state === 2 ? "fileSuccess" : entry.state === 3 ? "fileFailed" : "";
+    var state = entry.state === 1 ? "fileEntrySelected" : entry.state === 3 ? "fileEntryFailed" : "";
     var primary = "open/" + side + "/" + index;
     var iconAction = "select/" + side + "/" + index;
     if (!entry.parent && !entry.directory) primary = iconAction;
     if (entry.parent) iconAction = primary;
-    var contents = [
-      text(shorten(entry.name, entry.directory ? 27 : 20), ["fileName"].concat(state ? [state] : []))
-    ];
-    if (!entry.directory) contents.push(text(size(entry.size), ["fileSize"].concat(state ? [state] : [])));
+    var progress = entry.state >= 2 ? entry.progress : -1;
+    var progressClass = entry.state === 2 ? "fileProgressSuccess" : entry.state === 3 ? "fileProgressFailed" : "";
+    var contents = progress < 0 ? [] : [create("div", { staticClass: ["fileProgressTrack"] }, [
+      create("div", { staticClass: ["fileProgress"].concat(progressClass ? [progressClass] : []), style: { width: progress + "%" } })
+    ])];
+    contents.push(text(shorten(entry.name, entry.directory ? 24 : 18), ["fileName"]));
+    if (!entry.directory || progress >= 0) contents.push(text(progress < 0 ? size(entry.size) : progress + "%", ["fileSize"]));
     return create("div", {
-      staticClass: ["fileRow"], style: { top: (index - this.fileOffset[side]) * 27 }
+      staticClass: ["fileRow"], style: { top: (index - this.fileOffset[side]) * 30 }
     }, [
-      create("div", { staticClass: ["fileEntryMain"], on: { click: () => !this.fileScrolled && this.fileAction(primary) } }, contents),
+      create("div", { staticClass: ["fileEntryMain"].concat(state ? [state] : []), on: { click: () => !this.fileScrolled && this.fileAction(primary) } }, contents),
       create("div", { staticClass: ["fileEntryIconButton"], on: { click: () => !this.fileScrolled && this.fileAction(iconAction) } }, [
         icon(entry.parent || entry.directory ? icons.folder : icons.file, ["fileEntryIcon"])
       ])
     ]);
   };
-  const transfer = (side, action, classes, label) => {
-    const current = side === "pen" ? 1 : 2;
-    const progress = this.fileState.transfer === current ? this.fileState.progress : this.fileWatch && this.fileWatch.transfer === current ? 0 : -1;
+  const transfer = (side, action, label) => {
+    const ready = this.fileState[side].some(entry => entry.state === 1);
     return create("div", {
-      staticClass: ["fileTransfer"].concat(classes), on: { click: () => progress < 0 && this.fileAction(action) }
-    }, progress < 0 ? [text(label, ["fileTransferText"])] : [
-      create("div", { staticClass: ["fileProgress"], style: { width: progress + "%" } }),
-      text(progress + "%", ["fileTransferText"])
-    ]);
+      staticClass: ["fileTransfer"].concat(ready ? ["fileTransferReady"] : []), on: { click: () => ready && this.fileAction(action) }
+    }, [text(label, ["fileTransferText"])]);
   };
-  const list = (side, entries, action, classes, label) => {
+  const list = (side, entries, action, label, left) => {
     const offset = this.fileOffset[side];
     return create("div", {
-      staticClass: ["fileList", side === "pen" ? "filePen" : "fileWindows"],
+      staticClass: ["filePane"].concat(left ? ["filePaneLeft"] : []),
       on: {
         touchstart: event => this.fileTouchStart(side, event),
         touchmove: event => this.fileTouchMove(side, event),
@@ -646,15 +648,23 @@ const render = function () {
       }
     }, [
       create("div", { staticClass: ["fileEntries"] }, entries.slice(offset, offset + fileRows).map((entry, index) => fileRow(side, entry, offset + index))),
-      transfer(side, action, classes, label)
+      transfer(side, action, label)
     ]);
   };
-  return create("div", { staticClass: ["files"] }, [
+  const fileSession = this.fileSession;
+  const fileRevision = this.fileState.revision;
+  return create("div", { key: "files", staticClass: ["files"] }, [
     toolBack(() => this.showTools()),
-    text("\u672c\u5730", ["fileDevice", "filePenTitle"]),
-    text("\u8fdc\u7aef", ["fileDevice", "fileWindowsTitle"]),
-    list("pen", this.fileState.pen, "transfer/push", ["filePush"], "\u4f20\u8fdc\u7aef"),
-    list("windows", this.fileState.windows, "transfer/pull", ["filePull"], "\u4f20\u672c\u5730")
+    toolStop(() => this.stop()),
+    create("image", { key: "file-event-" + fileSession + "-" + fileRevision, staticClass: ["fileEvent"], attrs: { src: "http://127.0.0.1:999/files/watch/" + fileRevision }, on: { load: () => this.fileChanged(fileSession), error: () => this.fileChanged(fileSession) } }),
+    create("div", { staticClass: ["fileRail"] }, [
+      create("div", { staticClass: ["fileTitle"] }, [text("\u672c\u5730", ["fileTitleText"])]),
+      create("div", { staticClass: ["fileTitle", "fileTitleLast"] }, [text("\u8fdc\u7aef", ["fileTitleText"])])
+    ]),
+    create("div", { staticClass: ["filePanels"] }, [
+      list("pen", this.fileState.pen, "transfer/push", "\u4f20\u8fdc\u7aef", true),
+      list("windows", this.fileState.windows, "transfer/pull", "\u4f20\u672c\u5730", false)
+    ])
   ]);
 };
 

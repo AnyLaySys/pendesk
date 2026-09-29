@@ -27,8 +27,6 @@ pub struct Viewport {
 impl Viewport {
     pub fn new(video: Video) -> Result<Self, String> {
         let bounds = Bounds::current()?;
-        let scale = (f64::from(video.height) / f64::from(bounds.width))
-            .max(f64::from(video.width) / f64::from(bounds.height));
         let mut viewport = Self {
             bounds,
             center_x: f64::from(bounds.width) / 2.0,
@@ -36,7 +34,7 @@ impl Viewport {
             pointer_x: f64::from(bounds.width) / 2.0,
             pointer_y: f64::from(bounds.height) / 2.0,
             video,
-            zoom: scale.recip().clamp(1.0, 9.0),
+            zoom: 1.0,
         };
         viewport.sync_pointer();
         viewport.center_x = viewport.pointer_x;

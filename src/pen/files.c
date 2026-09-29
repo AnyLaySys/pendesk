@@ -41,7 +41,7 @@ static int action_row(struct files *files, const char *text, bool open) {
 
 struct files *
 files_new(const char *host, uint16_t port, const char *socks_host, uint16_t socks_port,
-          const uint8_t token[32]) {
+          const uint8_t token[32], int notify_fd) {
     struct files *files;
     if (!host || !socks_host || !token) return NULL;
     files = calloc(1, sizeof(*files));
@@ -55,6 +55,8 @@ files_new(const char *host, uint16_t port, const char *socks_host, uint16_t sock
     files->port = port;
     files->socks_port = socks_port;
     memcpy(files->token, token, sizeof(files->token));
+    files->notify_fd = notify_fd;
+    atomic_init(&files->state_version, 0);
     if (pthread_mutex_init(&files->mutex, NULL) != 0) {
         free(files);
         return NULL;

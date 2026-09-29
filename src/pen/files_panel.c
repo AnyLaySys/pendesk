@@ -73,6 +73,7 @@ static int local_list(struct file_panel *panel) {
         output->directory = S_ISDIR(status.st_mode);
         output->size = (uint64_t) status.st_size;
         output->state = FILE_STATUS_NONE;
+        output->progress = 0;
     }
     closedir(directory);
     qsort(panel->entries, panel->count, sizeof(panel->entries[0]), entry_compare);
@@ -91,7 +92,7 @@ int files_remote_list(struct files *files, struct file_panel *panel) {
     panel_clear(panel);
     for (uint16_t index = 0; index != count; ++index) {
         uint8_t kind;
-        struct file_entry item;
+        struct file_entry item = {0};
         if (files_read_all(fd, &kind, 1) != 0 ||
             files_read_text(fd, item.name, sizeof(item.name)) != 0 ||
             files_read_u64(fd, &item.size) != 0 || (kind != 0 && kind != 1) ||
@@ -100,7 +101,6 @@ int files_remote_list(struct files *files, struct file_panel *panel) {
             return -1;
         }
         item.directory = kind != 0;
-        item.state = FILE_STATUS_NONE;
         if (panel->count != FILE_ENTRIES) panel->entries[panel->count++] = item;
     }
     close(fd);
@@ -118,9 +118,8 @@ int files_panel_select(struct files *files, bool pen, size_t row) {
     if (parent && !row) return -1;
     index = row - parent;
     if (index >= panel->count) return -1;
-    panel->entries[index].state =
-            panel->entries[index].state == FILE_STATUS_SELECTED ? FILE_STATUS_NONE
-                                                                : FILE_STATUS_SELECTED;
+    panel->entries[index].state = panel->entries[index].state == FILE_STATUS_SELECTED
+                                          ? FILE_STATUS_NONE : FILE_STATUS_SELECTED;
     return 0;
 }
 
@@ -173,9 +172,9 @@ static int state_text(FILE *output, const char *text) {
 static int state_entry(FILE *output, const struct file_entry *entry, bool parent) {
     if (fputs("{\"name\":", output) == EOF ||
         state_text(output, parent ? ".." : entry->name) != 0 ||
-        fprintf(output, ",\"size\":%llu,\"directory\":%u,\"state\":%u,\"parent\":%u}",
+        fprintf(output, ",\"size\":%llu,\"directory\":%u,\"state\":%u,\"progress\":%u,\"parent\":%u}",
                 (unsigned long long) (parent ? 0 : entry->size), parent || entry->directory,
-                parent ? FILE_STATUS_NONE : entry->state, parent) < 0)
+                parent ? FILE_STATUS_NONE : entry->state, parent ? 0 : entry->progress, parent) < 0)
         return -1;
     return 0;
 }
@@ -195,19 +194,31 @@ static int state_panel(FILE *output, const struct file_panel *panel) {
     return fputc(']', output) == EOF ? -1 : 0;
 }
 
-int files_state_write(const struct files *files) {
+int files_state_write(struct files *files) {
     FILE *output = fopen(FILE_STATE_TEMP, "w");
     int result = -1;
+    uint64_t revision = atomic_load(&files->state_version) + 1;
     if (!output) return -1;
-    if (fputs("{\"pen\":", output) != EOF && state_panel(output, &files->pen) == 0 &&
+    if (fprintf(output, "{\"revision\":%llu,\"pen\":", (unsigned long long) revision) >= 0 &&
+        state_panel(output, &files->pen) == 0 &&
         fputs(",\"windows\":", output) != EOF && state_panel(output, &files->windows) == 0 &&
-        fprintf(output, ",\"transfer\":%u,\"progress\":%u}", (unsigned int) files->transfer,
-                (unsigned int) files->progress) >= 0)
+        fputc('}', output) != EOF)
         result = 0;
     if (fclose(output) != 0) result = -1;
     if (result != 0) {
         unlink(FILE_STATE_TEMP);
         return -1;
     }
-    return rename(FILE_STATE_TEMP, FILE_STATE);
+    if (rename(FILE_STATE_TEMP, FILE_STATE) != 0) return -1;
+    atomic_store(&files->state_version, revision);
+    if (files->notify_fd >= 0) {
+        uint8_t value = 0;
+        ssize_t count = write(files->notify_fd, &value, sizeof(value));
+        (void) count;
+    }
+    return 0;
+}
+
+uint64_t files_state_version(const struct files *files) {
+    return atomic_load(&files->state_version);
 }

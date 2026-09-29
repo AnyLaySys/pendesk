@@ -6,6 +6,7 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdatomic.h>
 #include <stdint.h>
 
 enum {
@@ -21,7 +22,8 @@ enum {
     QUEUE_ACTION = 64
 };
 enum {
-    FILE_STATUS_NONE, FILE_STATUS_SELECTED, FILE_STATUS_SUCCESS, FILE_STATUS_FAILED
+    FILE_STATUS_NONE, FILE_STATUS_SELECTED, FILE_STATUS_SUCCESS, FILE_STATUS_FAILED,
+    FILE_STATUS_TRANSFER
 };
 #define FILE_STATE "/tmp/pendesk-files.json"
 #define FILE_STATE_TEMP "/tmp/.pendesk-files.json.tmp"
@@ -31,6 +33,9 @@ struct file_entry {
     uint64_t size;
     bool directory;
     uint8_t state;
+    uint8_t progress;
+    uint64_t transfer_total;
+    uint64_t transferred;
 };
 struct file_panel {
     char path[FILE_PATH];
@@ -46,10 +51,8 @@ struct files {
     pthread_mutex_t mutex;
     struct file_panel pen;
     struct file_panel windows;
-    uint64_t total;
-    uint64_t copied;
-    uint8_t transfer;
-    uint8_t progress;
+    atomic_uint_fast64_t state_version;
+    int notify_fd;
     char queue[QUEUE_SLOTS][QUEUE_ACTION];
     unsigned int head;
     unsigned int tail;
@@ -97,7 +100,7 @@ int files_panel_select(struct files *files, bool pen, size_t row);
 
 int files_panel_open(struct files *files, bool pen, size_t row);
 
-int files_state_write(const struct files *files);
+int files_state_write(struct files *files);
 
 int files_transfer(struct files *files, bool upload);
 

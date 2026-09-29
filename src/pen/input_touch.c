@@ -133,7 +133,7 @@ int input_touch_flush(struct input_state *input) {
         if (gesture == GESTURE_DRAG) return input_send_button(input, 1, false);
         uint8_t button = gesture == GESTURE_TAP ? 1 :
                          (gesture == GESTURE_PAIR || gesture == GESTURE_PAIR_END) &&
-                         now - touch->started < 400 ? 2 : 0;
+                         now - touch->started < 300 ? 2 : 0;
         if (button) {
             uint8_t packet[] = {0x21, button, 1, 0x21, button, 0};
             return link_send(input->link, packet, sizeof(packet));
@@ -163,8 +163,8 @@ int input_touch_flush(struct input_state *input) {
         if (touch->gesture == GESTURE_PAIR) {
             uint32_t spread = (uint32_t) abs((int32_t) distance - (int32_t) touch->distance);
             uint32_t motion = touch_distance(input, x, y, touch->origin_x, touch->origin_y);
-            if (spread >= 8 && spread > motion) touch->gesture = GESTURE_ZOOM;
-            else if (motion >= 8 && motion > spread) touch->gesture = GESTURE_SCROLL;
+            if (spread >= motion + GESTURE_THRESHOLD) touch->gesture = GESTURE_ZOOM;
+            else if (motion >= spread + GESTURE_THRESHOLD) touch->gesture = GESTURE_SCROLL;
             else return 0;
         }
         if (touch->gesture == GESTURE_ZOOM) {
@@ -192,9 +192,9 @@ int input_touch_flush(struct input_state *input) {
         return input_send_move(input, 0, 0);
     }
     if (touch->gesture == GESTURE_TAP) {
-        if (touch_distance(input, x, y, touch->origin_x, touch->origin_y) >= 5)
+        if (touch_distance(input, x, y, touch->origin_x, touch->origin_y) > 3)
             touch->gesture = GESTURE_MOVE;
-        else if (now - touch->started >= 400) {
+        else if (now - touch->started >= 300) {
             touch->gesture = GESTURE_DRAG;
             return input_send_button(input, 1, true);
         } else return 0;

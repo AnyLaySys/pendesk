@@ -9,7 +9,7 @@
 #include <stdint.h>
 
 enum {
-    BIT_WORD = sizeof(unsigned long) * 8, CONTACTS = 2
+    BIT_WORD = sizeof(unsigned long) * 8, CONTACTS = 2, GESTURE_THRESHOLD = 9
 };
 
 struct link;
@@ -78,9 +78,9 @@ struct input_state {
     pthread_t thread;
     bool thread_started;
     char control_path[108];
+    uint8_t control_buffer[128];
+    size_t control_length;
 };
-
-int input_send_control(const char *config, const char *text);
 
 int input_open(struct input_state *input, const char *config);
 
