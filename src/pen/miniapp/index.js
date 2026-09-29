@@ -280,29 +280,29 @@ const script = {
       const changed = event && event.changedTouches;
       return active && active.length ? active : changed && changed.length ? changed : event ? [event] : [];
     },
-    touchPoint(touch, event) {
+    touchPoint(touch) {
       const point = this.padPosition(touch);
-      const target = event && (event.currentTarget || event.target);
-      const rect = target && target.getBoundingClientRect && target.getBoundingClientRect();
       return {
         id: point.id,
-        x: Math.max(0, Math.round(point.x - (rect ? rect.left : 0))),
-        y: Math.max(0, Math.round(point.y - (rect ? rect.top : 0)))
+        x: Math.max(0, Math.round(point.x)),
+        y: Math.max(0, Math.round(point.y))
       };
     },
     touchFrame(event, ending) {
       if (this.view !== "desktop" || !this.touchOn) return;
-      const active = event && event.touches || (ending ? [] : [event]);
-      const changed = event && event.changedTouches || (event ? [event] : []);
+      const changed = event && event.changedTouches || [];
+      const active = ending
+        ? (event && event.touches || [])
+        : (event && event.touches && event.touches.length ? event.touches : changed);
       const points = [];
       for (let index = 0; index < active.length; index++) {
-        const point = this.touchPoint(active[index], event);
+        const point = this.touchPoint(active[index]);
         point.phase = this.directTouches[point.id] ? 2 : 1;
         points.push(point);
       }
       if (ending) {
         for (let index = 0; index < changed.length; index++) {
-          const point = this.touchPoint(changed[index], event);
+          const point = this.touchPoint(changed[index]);
           if (!active.some(item => (item.identifier === undefined ? 0 : item.identifier) === point.id)) {
             const previous = this.directTouches[point.id] || point;
             points.push({ id: point.id, phase: 3, x: previous.x, y: previous.y });
@@ -578,26 +578,23 @@ const render = function () {
   const text = (value, classes, style) => create("text", {
     staticClass: ["font"].concat(classes), style, attrs: { value }
   });
+  const touchEvents = {
+    touchstart: event => this.touchFrame(event, false),
+    touchmove: event => this.touchFrame(event, false),
+    touchend: event => this.touchFrame(event, true),
+    touchcancel: event => this.touchFrame(event, false)
+  };
   const remoteFrame = classes => this.screenOn ? create("image", {
     staticClass: classes,
     attrs: { src: "http://127.0.0.1:999/frame?" + this.frame },
-    on: {
+    on: Object.assign({
       load: event => this.schedule(!!event && event.success === false),
-      error: () => this.schedule(true),
-      touchstart: event => this.touchFrame(event, false),
-      touchmove: event => this.touchFrame(event, false),
-      touchend: event => this.touchFrame(event, true),
-      touchcancel: event => this.touchFrame(event, true)
-    }
+      error: () => this.schedule(true)
+    }, touchEvents)
   }) : create("div", { staticClass: classes });
   const touchSurface = () => this.touchOn ? create("div", {
     staticClass: ["touchSurface"],
-    on: {
-      touchstart: event => this.touchFrame(event, false),
-      touchmove: event => this.touchFrame(event, false),
-      touchend: event => this.touchFrame(event, true),
-      touchcancel: event => this.touchFrame(event, true)
-    }
+    on: touchEvents
   }) : null;
   const icon = (value, classes) => create("div", {
     staticClass: classes,

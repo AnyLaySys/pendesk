@@ -16,9 +16,7 @@ use windows::Win32::UI::Input::Pointer::{
     POINTER_FLAG_NEW, POINTER_FLAG_PRIMARY, POINTER_FLAG_UP, POINTER_FLAG_UPDATE, POINTER_INFO,
     POINTER_TOUCH_INFO,
 };
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetSystemMetrics, PT_TOUCH, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, TOUCH_MASK_CONTACTAREA,
-};
+use windows::Win32::UI::WindowsAndMessaging::{PT_TOUCH, TOUCH_MASK_CONTACTAREA};
 static TOUCH_DEVICE: OnceLock<Result<isize, String>> = OnceLock::new();
 #[derive(Clone, Copy)]
 pub struct TouchContact {
@@ -52,8 +50,6 @@ pub fn touch(contacts: &[TouchContact]) -> Result<(), String> {
         })
         .as_ref()
         .map_err(String::clone)?;
-    let origin_x = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
-    let origin_y = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
     let primary = contacts
         .iter()
         .find(|contact| contact.phase != 3)
@@ -61,10 +57,7 @@ pub fn touch(contacts: &[TouchContact]) -> Result<(), String> {
     let pointers = contacts
         .iter()
         .map(|contact| {
-            let point = POINT {
-                x: contact.x - origin_x,
-                y: contact.y - origin_y,
-            };
+            let point = POINT { x: contact.x, y: contact.y };
             let mut flags = match contact.phase {
                 1 => {
                     POINTER_FLAG_DOWN
