@@ -23,12 +23,13 @@ if [ "${1:-}" = files ]; then
             ;;
         *) exit 2 ;;
     esac
+    timeout=15
     case "$action" in
         transfer/*)
             /bin/setsid curl -fsS --max-time 600 "http://127.0.0.1:999/files/$action" < /dev/null > /dev/null 2>&1 &
             ;;
         *)
-            curl -fsS --max-time 15 "http://127.0.0.1:999/files/$action" < /dev/null > /dev/null 2>&1 || :
+            curl -fsS --max-time "$timeout" "http://127.0.0.1:999/files/$action" < /dev/null > /dev/null 2>&1 || :
             ;;
     esac
     exit

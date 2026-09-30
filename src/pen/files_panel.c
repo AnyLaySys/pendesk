@@ -122,6 +122,9 @@ int files_panel_select(struct files *files, bool pen, size_t row) {
     if (index >= panel->count) return -1;
     panel->entries[index].state = panel->entries[index].state == FILE_STATUS_SELECTED
                                           ? FILE_STATUS_NONE : FILE_STATUS_SELECTED;
+    panel->entries[index].progress = 0;
+    panel->entries[index].total = 0;
+    panel->entries[index].done = 0;
     return 0;
 }
 
@@ -174,10 +177,12 @@ static int state_text(FILE *output, const char *text) {
 static int state_entry(FILE *output, const struct file_entry *entry, bool parent) {
     if (fputs("{\"name\":", output) == EOF ||
         state_text(output, parent ? ".." : entry->name) != 0 ||
-        fprintf(output, ",\"size\":%llu,\"modified\":%llu,\"directory\":%u,\"state\":%u,\"progress\":%u,\"parent\":%u}",
+        fprintf(output, ",\"size\":%llu,\"modified\":%llu,\"directory\":%u,\"state\":%u,\"progress\":%u,\"total\":%llu,\"done\":%llu,\"parent\":%u}",
                 (unsigned long long) (parent ? 0 : entry->size),
                 (unsigned long long) (parent ? 0 : entry->modified), parent || entry->directory,
-                parent ? FILE_STATUS_NONE : entry->state, parent ? 0 : entry->progress, parent) < 0)
+                parent ? FILE_STATUS_NONE : entry->state, parent ? 0 : entry->progress,
+                (unsigned long long) (parent ? 0 : entry->total),
+                (unsigned long long) (parent ? 0 : entry->done), parent) < 0)
         return -1;
     return 0;
 }
@@ -200,9 +205,8 @@ static int state_panel(FILE *output, const struct file_panel *panel) {
 int files_state_write(struct files *files) {
     FILE *output = fopen(FILE_STATE_TEMP, "w");
     int result = -1;
-    uint64_t revision = atomic_load(&files->state_version) + 1;
     if (!output) return -1;
-    if (fprintf(output, "{\"revision\":%llu,\"pen\":", (unsigned long long) revision) >= 0 &&
+    if (fputs("{\"pen\":", output) != EOF &&
         state_panel(output, &files->pen) == 0 &&
         fputs(",\"windows\":", output) != EOF && state_panel(output, &files->windows) == 0 &&
         fputc('}', output) != EOF)
@@ -213,15 +217,5 @@ int files_state_write(struct files *files) {
         return -1;
     }
     if (rename(FILE_STATE_TEMP, FILE_STATE) != 0) return -1;
-    atomic_store(&files->state_version, revision);
-    if (files->notify_fd >= 0) {
-        uint8_t value = 0;
-        ssize_t count = write(files->notify_fd, &value, sizeof(value));
-        (void) count;
-    }
     return 0;
-}
-
-uint64_t files_state_version(const struct files *files) {
-    return atomic_load(&files->state_version);
 }

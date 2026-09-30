@@ -15,7 +15,6 @@ struct preview {
     size_t length;
     uint64_t sequence;
     int listener;
-    int event[2];
     struct files *files;
     pthread_t thread;
     bool thread_started;

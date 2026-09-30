@@ -9,8 +9,6 @@
 #include <string.h>
 #include <unistd.h>
 
-static void *files_worker(void *argument);
-
 static bool side(const char *text, bool *pen) {
     if (!strcmp(text, "pen")) {
         *pen = true;
@@ -41,7 +39,7 @@ static int action_row(struct files *files, const char *text, bool open) {
 
 struct files *
 files_new(const char *host, uint16_t port, const char *socks_host, uint16_t socks_port,
-          const uint8_t token[32], int notify_fd) {
+          const uint8_t token[32]) {
     struct files *files;
     if (!host || !socks_host || !token) return NULL;
     files = calloc(1, sizeof(*files));
@@ -55,48 +53,29 @@ files_new(const char *host, uint16_t port, const char *socks_host, uint16_t sock
     files->port = port;
     files->socks_port = socks_port;
     memcpy(files->token, token, sizeof(files->token));
-    files->notify_fd = notify_fd;
-    atomic_init(&files->state_version, 0);
     if (pthread_mutex_init(&files->mutex, NULL) != 0) {
         free(files);
         return NULL;
     }
     files->pen.path[0] = '/';
     unlink(FILE_STATE);
-    if (pthread_mutex_init(&files->queue_mutex, NULL) != 0 ||
-        pthread_cond_init(&files->queue_cond, NULL) != 0 ||
-        pthread_create(&files->worker, NULL, files_worker, files) != 0) {
-        pthread_mutex_destroy(&files->mutex);
-        free(files);
-        return NULL;
-    }
-    files->worker_started = true;
     return files;
 }
 
 void files_free(struct files *files) {
     if (!files) return;
-    if (files->worker_started) {
-        pthread_mutex_lock(&files->queue_mutex);
-        files->stopping = true;
-        pthread_cond_signal(&files->queue_cond);
-        pthread_mutex_unlock(&files->queue_mutex);
-        pthread_join(files->worker, NULL);
-        pthread_cond_destroy(&files->queue_cond);
-        pthread_mutex_destroy(&files->queue_mutex);
-    }
     pthread_mutex_destroy(&files->mutex);
     free(files);
 }
 
 static void run_action(struct files *files, const char *action) {
+    bool transfer = !strcmp(action, "transfer/push") || !strcmp(action, "transfer/pull");
     pthread_mutex_lock(&files->mutex);
     if (!strcmp(action, "reset")) {
         files->pen.path[0] = '/';
         files->pen.path[1] = '\0';
         files->windows.path[0] = '\0';
         files_refresh_panel(files, true);
-        files_state_write(files);
         files_refresh_panel(files, false);
     } else if (!strncmp(action, "open/", 5)) {
         action_row(files, action + 5, true);
@@ -107,37 +86,12 @@ static void run_action(struct files *files, const char *action) {
     } else if (!strcmp(action, "transfer/pull")) {
         files_transfer(files, false);
     }
-    files_state_write(files);
+    if (!transfer) files_state_write(files);
     pthread_mutex_unlock(&files->mutex);
 }
 
-static void *files_worker(void *argument) {
-    struct files *files = argument;
-    pthread_mutex_lock(&files->queue_mutex);
-    while (alive) {
-        while (alive && !files->stopping && files->head == files->tail)
-            pthread_cond_wait(&files->queue_cond, &files->queue_mutex);
-        if (files->stopping || !alive) break;
-        char action[QUEUE_ACTION];
-        memcpy(action, files->queue[files->head % QUEUE_SLOTS], QUEUE_ACTION);
-        ++files->head;
-        pthread_mutex_unlock(&files->queue_mutex);
-        run_action(files, action);
-        pthread_mutex_lock(&files->queue_mutex);
-    }
-    pthread_mutex_unlock(&files->queue_mutex);
-    return NULL;
-}
-
-int files_submit(struct files *files, const char *action) {
-    size_t length;
-    if (!files || !action || (length = strlen(action)) >= QUEUE_ACTION) return -1;
-    pthread_mutex_lock(&files->queue_mutex);
-    if (files->tail - files->head < QUEUE_SLOTS) {
-        memcpy(files->queue[files->tail % QUEUE_SLOTS], action, length + 1);
-        ++files->tail;
-        pthread_cond_signal(&files->queue_cond);
-    }
-    pthread_mutex_unlock(&files->queue_mutex);
+int files_submit_sync(struct files *files, const char *action) {
+    if (!files || !action || strlen(action) >= 64) return -1;
+    run_action(files, action);
     return 0;
 }

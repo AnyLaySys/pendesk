@@ -6,7 +6,6 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include <stdatomic.h>
 #include <stdint.h>
 
 enum {
@@ -17,9 +16,7 @@ enum {
     FILE_LIST = 1,
     FILE_DOWNLOAD = 2,
     FILE_UPLOAD = 3,
-    FILE_DIRECTORY = 4,
-    QUEUE_SLOTS = 32,
-    QUEUE_ACTION = 64
+    FILE_DIRECTORY = 4
 };
 enum {
     FILE_STATUS_NONE, FILE_STATUS_SELECTED, FILE_STATUS_SUCCESS, FILE_STATUS_FAILED,
@@ -35,8 +32,8 @@ struct file_entry {
     bool directory;
     uint8_t state;
     uint8_t progress;
-    uint64_t transfer_total;
-    uint64_t transferred;
+    uint64_t total;
+    uint64_t done;
 };
 struct file_panel {
     char path[FILE_PATH];
@@ -52,16 +49,6 @@ struct files {
     pthread_mutex_t mutex;
     struct file_panel pen;
     struct file_panel windows;
-    atomic_uint_fast64_t state_version;
-    int notify_fd;
-    char queue[QUEUE_SLOTS][QUEUE_ACTION];
-    unsigned int head;
-    unsigned int tail;
-    pthread_mutex_t queue_mutex;
-    pthread_cond_t queue_cond;
-    pthread_t worker;
-    bool worker_started;
-    bool stopping;
 };
 
 int files_wait_fd(int fd, short events);
