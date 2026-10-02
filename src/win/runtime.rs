@@ -1,4 +1,4 @@
-use crate::all::args::{self, Command, Config};
+use crate::all::cmd::{self as cmd, Command, Config};
 use crate::cfg;
 use crate::elevation;
 use crate::server;
@@ -16,13 +16,15 @@ use windows::core::w;
 const HOST: windows::core::PCWSTR = w!("Local\\PenDeskHost");
 const STOP: windows::core::PCWSTR = w!("Local\\PenDeskStop");
 pub fn dispatch() -> Result<(), String> {
-    match args::parse()? {
+    match cmd::parse()? {
         Command::Run { config, wait } => run(config, wait),
+        Command::Install { serial } => crate::setup::install(serial),
+        Command::Configure(setup) => crate::setup::configure(setup),
         Command::Restart => restart(),
         Command::Stop => stop(),
-        Command::Startup(enabled) => startup(enabled),
+        Command::Startup(enabled) => startup::set(enabled),
         Command::Help => {
-            println!("{}", args::usage());
+            println!("{}", cmd::usage());
             Ok(())
         }
     }
@@ -58,9 +60,6 @@ pub fn stop() -> Result<(), String> {
         let _ = CloseHandle(event);
     }
     result.map_err(|error| error.to_string())
-}
-pub fn startup(enabled: bool) -> Result<(), String> {
-    startup::set(enabled)
 }
 struct Instance(HANDLE);
 impl Instance {

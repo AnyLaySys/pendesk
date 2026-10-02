@@ -1,7 +1,8 @@
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
 const MAGIC: [u8; 4] = *b"PDSK";
-pub const VERSION: u8 = 9;
+pub const VERSION: u8 = 13;
+pub const FPS: u32 = 60;
 const CONFIG: u8 = 0x10;
 const AUDIO: u8 = 0x11;
 const MOVE: u8 = 0x20;
@@ -14,7 +15,7 @@ const AUDIO_TOGGLE: u8 = 0x27;
 const CAMERA_TOGGLE: u8 = 0x29;
 const TOUCH: u8 = 0x2a;
 const TOUCH_POINTS: u8 = 10;
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Video {
     pub width: u16,
     pub height: u16,
@@ -39,11 +40,12 @@ pub struct TouchPoint {
     pub y: u16,
 }
 pub enum Input {
-    Move(i16, i16),
+    Move(i16, i16, u32),
     Button(u8, bool),
     Key(u16, bool),
     Zoom(i16),
     Video(bool),
+    Keyframe,
     Wheel(i16),
     Audio(bool),
     Camera(bool),
@@ -87,6 +89,23 @@ pub fn write_config(stream: &mut TcpStream, view: View) -> io::Result<()> {
     packet[8..10].copy_from_slice(&view.height.to_be_bytes());
     stream.write_all(&packet)
 }
+pub fn write_canvas(stream: &mut TcpStream, canvas: Video, origin: (u16, u16)) -> io::Result<()> {
+    let mut packet = [0x12, 1, 0, 0, 0, 0, 0, 0, 0, 0];
+    packet[2..4].copy_from_slice(&canvas.height.to_be_bytes());
+    packet[4..6].copy_from_slice(&canvas.width.to_be_bytes());
+    packet[6..8].copy_from_slice(&origin.0.to_be_bytes());
+    packet[8..10].copy_from_slice(&origin.1.to_be_bytes());
+    stream.write_all(&packet)
+}
+
+pub fn write_pointer(stream: &mut TcpStream, point: (u16, u16), sequence: u32) -> io::Result<()> {
+    let mut packet = [0x12, 2, 0, 0, 0, 0, 0, 0, 0, 0];
+    packet[2..4].copy_from_slice(&point.0.to_be_bytes());
+    packet[4..6].copy_from_slice(&point.1.to_be_bytes());
+    packet[6..10].copy_from_slice(&sequence.to_be_bytes());
+    stream.write_all(&packet)
+}
+
 pub fn write_audio(stream: &mut TcpStream) -> io::Result<()> {
     stream.write_all(&[AUDIO, 1, 0, 0, 0, 0, 0, 0, 0, 0])
 }
@@ -97,7 +116,13 @@ pub fn read_input(stream: &mut TcpStream) -> io::Result<Input> {
     let mut kind = [0];
     stream.read_exact(&mut kind)?;
     match kind[0] {
-        MOVE => Ok(Input::Move(read_i16(stream)?, read_i16(stream)?)),
+        MOVE => {
+            let x = read_i16(stream)?;
+            let y = read_i16(stream)?;
+            let mut sequence = [0; 4];
+            stream.read_exact(&mut sequence)?;
+            Ok(Input::Move(x, y, u32::from_be_bytes(sequence)))
+        }
         BUTTON => {
             let mut packet = [0; 2];
             stream.read_exact(&mut packet)?;
@@ -110,6 +135,7 @@ pub fn read_input(stream: &mut TcpStream) -> io::Result<Input> {
             Ok(Input::Key(key, state[0] != 0))
         }
         ZOOM => Ok(Input::Zoom(read_i16(stream)?)),
+        0x2b => Ok(Input::Keyframe),
         VIDEO => {
             let mut state = [0];
             stream.read_exact(&mut state)?;

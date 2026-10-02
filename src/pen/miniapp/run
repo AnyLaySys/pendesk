@@ -14,6 +14,7 @@ fi
 set -eu
 umask 077
 config="$data/config"
+device_list=/userdisk/PenDesk/CtrlDev
 if [ "${1:-}" = files ]; then
     action=${2:-}
     case "$action" in
@@ -50,49 +51,41 @@ alive() {
     esac
     [ "$(cut -d ' ' -f 3 "/proc/$pid/stat")" != Z ]
 }
-ready() {
-    [ -S "$data/tailscaled.sock" ] && HOME="$data" /bin/timeout 2 "$bin/tailscale" --socket="$data/tailscaled.sock" status --json > /dev/null 2>&1
+write_devices() {
+    active=
+    if [ -s "$config" ]; then active=$(sed -n 's/^host=//p' "$config"); fi
+    : > "$device_list"
+    for profile in "$data"/device-*.conf; do
+        [ -f "$profile" ] || continue
+        device=${profile##*/}
+        device=${device#device-}
+        device=${device%.conf}
+        if [ "$device" = "$active" ]; then printf '*' >> "$device_list"; fi
+        printf '%s\n' "$device" >> "$device_list"
+    done
+    chmod 644 "$device_list"
 }
 stop() {
     if alive "$1"; then
-        kill "$(cat "$1")" 2>/dev/null || :
-        count=0
-        while alive "$1" && [ "$count" -lt 30 ]; do
-            sleep 0.1
-            count=$((count + 1))
-        done
-        if alive "$1"; then
-            kill -9 "$(cat "$1")" 2>/dev/null || :
-            count=0
-            while alive "$1" && [ "$count" -lt 10 ]; do
-                sleep 0.1
-                count=$((count + 1))
-            done
-            alive "$1" && return 1
-        fi
+        kill -9 "$(cat "$1")" 2>/dev/null || :
     fi
     rm -f "$1"
 }
 network() {
-    if alive "$data/tailscaled.pid" && ! ready; then
-        stop "$data/pdd.pid"
-        stop "$data/tailscaled.pid"
-    fi
-    if ! alive "$data/tailscaled.pid"; then
-        rm -f "$data/tailscaled.pid" "$data/tailscaled.sock"
-        socks=127.0.0.1:1055
-        if [ -s "$config" ]; then
-            socks=$(sed -n 's/^socks=//p' "$config")
-        fi
-        HOME="$data" XDG_CACHE_HOME="$data" /bin/setsid "$bin/tailscaled" --no-logs-no-support --tun=userspace-networking --state="$data/tailscaled.state" --socket="$data/tailscaled.sock" --socks5-server="$socks" < /dev/null > /dev/null 2>&1 &
-        echo $! > "$data/tailscaled.pid"
-    fi
+    if alive "$data/tailscaled.pid" && [ -S "$data/tailscaled.sock" ]; then return; fi
+    stop "$data/pdd.pid"
+    stop "$data/tailscaled.pid"
+    rm -f "$data/tailscaled.pid" "$data/tailscaled.sock"
+    socks=127.0.0.1:1055
+    if [ -s "$config" ]; then socks=$(sed -n 's/^socks=//p' "$config"); fi
+    HOME="$data" XDG_CACHE_HOME="$data" /bin/setsid "$bin/tailscaled" --no-logs-no-support --tun=userspace-networking --state="$data/tailscaled.state" --socket="$data/tailscaled.sock" --socks5-server="$socks" < /dev/null > /dev/null 2>&1 &
+    echo $! > "$data/tailscaled.pid"
     count=0
-    while ! ready && [ "$count" -lt 50 ]; do
+    while [ ! -S "$data/tailscaled.sock" ] && [ "$count" -lt 50 ]; do
         sleep 0.1
         count=$((count + 1))
     done
-    ready || return 1
+    [ -S "$data/tailscaled.sock" ]
 }
 initialize() {
     old=
@@ -114,6 +107,19 @@ initialize() {
             fi
         done
     fi
+    mkdir -p /userdisk/PenDesk
+    chmod 755 /userdisk/PenDesk
+    if [ -s "$config" ]; then
+        device=$(sed -n 's/^host=//p' "$config")
+        if [ -n "$device" ] && [ ! -f "$data/device-$device.conf" ]; then
+            cp "$config" "$data/device-$device.conf"
+            chmod 600 "$data/device-$device.conf"
+            write_devices
+        elif [ -n "$device" ] && [ ! -f "$device_list" ]; then
+            write_devices
+        fi
+    fi
+    [ -f "$device_list" ] && chmod 644 "$device_list"
     printf '%s\n' "$slot" > "$data/slot"
     chmod 755 "$bin/pdd" "$bin/tailscale" "$bin/tailscaled"
     chmod 755 "$bin/adb-guard"
@@ -143,6 +149,27 @@ mkdir -p "$data"
 chmod 700 "$data"
 initialize
 case "${1:-}" in
+    devices)
+        cat "$device_list"
+        exit
+        ;;
+    switch-device)
+        [ "$#" -eq 2 ] || exit 2
+        device=$2
+        case "$device" in 100.*) ;; *) exit 2 ;; esac
+        case "$device" in *[!0-9.]*|*..*) exit 2 ;; esac
+        profile="$data/device-$device.conf"
+        [ -s "$profile" ] || exit 2
+        "$bin/pdd" --check-config "$profile"
+        cp "$profile" "$data/config.new"
+        stop "$data/pdd.pid"
+        mv "$data/config.new" "$config"
+        write_devices
+        run
+        exit
+        ;;
+esac
+case "${1:-}" in
     network) network ;;
     status)
         network
@@ -158,21 +185,25 @@ case "${1:-}" in
         network
         if [ -s "$data/auth" ]; then
             result=0
-            HOME="$data" /bin/timeout 20 "$bin/tailscale" --socket="$data/tailscaled.sock" up --timeout=15s --auth-key="file:$data/auth" > /dev/null 2>&1 || result=$?
+            HOME="$data" /bin/timeout 20 "$bin/tailscale" --socket="$data/tailscaled.sock" up --timeout=15s --auth-key="file:$data/auth" || result=$?
             rm -f "$data/auth"
             [ "$result" -eq 0 ] || exit "$result"
         else
-            HOME="$data" /bin/timeout 8 "$bin/tailscale" --socket="$data/tailscaled.sock" up --timeout=3s > /dev/null 2>&1 || :
+            HOME="$data" /bin/timeout 20 "$bin/tailscale" --socket="$data/tailscaled.sock" up --timeout=15s || :
         fi
         run
         ;;
     configure)
         chmod 600 "$data/config.new"
         "$bin/pdd" --check-config "$data/config.new"
+        device=$(sed -n 's/^host=//p' "$data/config.new")
+        case "$device" in 100.*) ;; *) exit 2 ;; esac
+        cp "$data/config.new" "$data/device-$device.conf"
+        chmod 600 "$data/device-$device.conf"
         stop "$data/pdd.pid"
         stop "$data/tailscaled.pid"
         mv "$data/config.new" "$config"
-        run
+        write_devices
         ;;
     "") run > /dev/null 2>&1 ;;
     *) exit 2 ;;

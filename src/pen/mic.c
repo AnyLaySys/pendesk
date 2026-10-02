@@ -2,15 +2,14 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "mic.h"
+#include "record.h"
 #include <arpa/inet.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/prctl.h>
 #include <sys/socket.h>
-#include <sys/stat.h>
 #include <time.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -28,37 +27,6 @@ static int mixer(bool enabled) {
     return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
 }
 
-static int recording_file(char *path, size_t size) {
-    struct timespec now;
-    struct tm local;
-    char timestamp[16];
-    time_t seconds;
-    int milliseconds;
-    if ((mkdir("/userdisk/PenDesk", 0700) != 0 && errno != EEXIST) ||
-        (mkdir("/userdisk/PenDesk/Audio", 0700) != 0 && errno != EEXIST) ||
-        clock_gettime(CLOCK_REALTIME, &now) != 0)
-        return -1;
-    seconds = now.tv_sec;
-    milliseconds = now.tv_nsec / 1000000;
-    for (;;) {
-        if (!localtime_r(&seconds, &local) ||
-            !strftime(timestamp, sizeof(timestamp), "%Y%m%d_%H%M%S", &local) ||
-            snprintf(path, size, "/userdisk/PenDesk/Audio/%s_%03d.flac", timestamp, milliseconds) >=
-            (int) size)
-            return -1;
-        int fd = open(path, O_CREAT | O_EXCL | O_WRONLY, 0600);
-        if (fd >= 0) {
-            close(fd);
-            return 0;
-        }
-        if (errno != EEXIST) return -1;
-        if (++milliseconds == 1000) {
-            milliseconds = 0;
-            ++seconds;
-        }
-    }
-}
-
 void mic_init(struct microphone *microphone, const uint8_t nonce[8]) {
     *microphone = (struct microphone) {.fd = -1};
     memcpy(microphone->nonce, nonce, sizeof(microphone->nonce));
@@ -68,7 +36,6 @@ int mic_start(struct microphone *microphone) {
     struct sockaddr_in address = {.sin_family = AF_INET, .sin_addr = {.s_addr = htonl(
             INADDR_LOOPBACK)}};
     socklen_t address_length = sizeof(address);
-    char port[8];
     char port_arg[16];
     char file_arg[144];
     pid_t process;
@@ -86,9 +53,8 @@ int mic_start(struct microphone *microphone) {
         mixer(false);
         return -1;
     }
-    snprintf(port, sizeof(port), "%u", ntohs(address.sin_port));
-    snprintf(port_arg, sizeof(port_arg), "port=%s", port);
-    if (recording_file(microphone->path, sizeof(microphone->path)) != 0) {
+    snprintf(port_arg, sizeof(port_arg), "port=%u", ntohs(address.sin_port));
+    if (recording_file("Audio", "flac", microphone->path, sizeof(microphone->path)) != 0) {
         close(fd);
         mixer(false);
         return -1;
@@ -165,12 +131,10 @@ void mic_stop(struct microphone *microphone) {
 static int
 mic_send(const struct video *video, const struct cfg *cfg, bool recording, const uint8_t *payload,
          size_t length) {
-    uint8_t packet[10 + 14 + 1200];
+    uint8_t packet[10 + 14 + 1200] = {0, 0, 0, 1};
     struct in_addr host;
     uint16_t port = htons(cfg->port);
     if (length > 1200 || inet_pton(AF_INET, cfg->host, &host) != 1) return -1;
-    packet[0] = packet[1] = packet[2] = 0;
-    packet[3] = 1;
     memcpy(packet + 4, &host, sizeof(host));
     memcpy(packet + 8, &port, sizeof(port));
     memcpy(packet + 10, "PDSM", 4);

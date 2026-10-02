@@ -13,7 +13,8 @@
 
 static void transfer_progress(struct files *files, struct file_entry *entry, uint64_t bytes) {
     entry->done += bytes;
-    uint8_t progress = entry->total ? (uint8_t) (entry->done >= entry->total ? 100 : entry->done * 100 / entry->total) : 0;
+    uint8_t progress = entry->total ? (uint8_t)(
+            entry->done >= entry->total ? 100 : entry->done * 100 / entry->total) : 0;
     if (progress != entry->progress) {
         entry->progress = progress;
         files_state_write(files);
@@ -119,8 +120,8 @@ static int remote_total(struct files *files, const char *path, uint64_t *total) 
         char child[FILE_PATH + FILE_NAME + 2];
         if (snprintf(child, sizeof(child), "%s", path) < 0 || strlen(path) >= sizeof(child) ||
             files_path_child(child, sizeof(child), panel->entries[index].name) != 0 ||
-            (panel->entries[index].directory ? remote_total(files, child, total)
-                                             : add_total(total, panel->entries[index].size))) {
+            (panel->entries[index].directory ? remote_total(files, child, total) : add_total(total,
+                                                                                             panel->entries[index].size))) {
             free(panel);
             return -1;
         }
@@ -129,8 +130,8 @@ static int remote_total(struct files *files, const char *path, uint64_t *total) 
     return 0;
 }
 
-static int entry_total(struct files *files, bool upload, const struct file_entry *entry,
-                       uint64_t *total) {
+static int
+entry_total(struct files *files, bool upload, const struct file_entry *entry, uint64_t *total) {
     char path[FILE_PATH + FILE_NAME + 32];
     const char *parent = upload ? files->pen.path : files->windows.path;
     if (snprintf(path, sizeof(path), "%s", parent) < 0 || strlen(parent) >= sizeof(path) ||
@@ -181,7 +182,6 @@ static int download_directory(struct files *files, struct file_entry *entry, con
                               const char *parent, const char *name) {
     struct file_panel *panel = calloc(1, sizeof(*panel));
     char directory[FILE_PATH + FILE_NAME + 64];
-    int result = -1;
     if (!panel || pen_directory(parent, name, directory, sizeof(directory)) != 0 ||
         snprintf(panel->path, sizeof(panel->path), "%s", source) < 0 ||
         strlen(source) >= sizeof(panel->path) || files_remote_list(files, panel) != 0) {
@@ -194,14 +194,14 @@ static int download_directory(struct files *files, struct file_entry *entry, con
             files_path_child(child, sizeof(child), panel->entries[index].name) != 0 ||
             (panel->entries[index].directory ? download_directory(files, entry, child, directory,
                                                                   panel->entries[index].name)
-                                             : download_file(files, entry, child, directory)) != 0) {
+                                             : download_file(files, entry, child, directory)) !=
+            0) {
             free(panel);
             return -1;
         }
     }
-    result = 0;
     free(panel);
-    return result;
+    return 0;
 }
 
 static int download_to_pen(struct files *files, struct file_entry *entry) {
@@ -275,8 +275,9 @@ upload_directories(struct files *files, const char *path, const char *parent, co
     return closedir(input) == 0 ? 0 : -1;
 }
 
-static int upload_tree(struct files *files, struct file_entry *progress_entry, int fd, const char *path,
-                       const char *directory) {
+static int
+upload_tree(struct files *files, struct file_entry *progress_entry, int fd, const char *path,
+            const char *directory) {
     DIR *input;
     struct dirent *entry;
     if (!(input = opendir(path))) return -1;
@@ -323,9 +324,12 @@ static int upload_from_pen(struct files *files, struct file_entry *entry) {
         return -1;
     fd = files_remote_open(files, FILE_UPLOAD);
     if (fd < 0) return -1;
-    result = entry->directory ? upload_tree(files, entry, fd, path, directory)
-                              : upload_file(files, entry, fd, path, files->windows.path,
-                                            entry->name);
+    result = entry->directory ? upload_tree(files, entry, fd, path, directory) : upload_file(files,
+                                                                                             entry,
+                                                                                             fd,
+                                                                                             path,
+                                                                                             files->windows.path,
+                                                                                             entry->name);
     close(fd);
     return result;
 }

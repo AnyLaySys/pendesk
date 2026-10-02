@@ -1,4 +1,4 @@
-use crate::all::args::Config;
+use crate::all::cmd::Config;
 use crate::all::files as all_files;
 use crate::all::server::{self as all_server, Backend};
 use crate::files::Disk;
@@ -17,19 +17,10 @@ impl Backend for Windows {
     fn tune_video(&self, socket: &UdpSocket) {
         let send = (4 * 1024 * 1024_i32).to_ne_bytes();
         let receive = (8 * 1024 * 1024_i32).to_ne_bytes();
+        let handle = SOCKET(socket.as_raw_socket() as usize);
         unsafe {
-            let _ = setsockopt(
-                SOCKET(socket.as_raw_socket() as usize),
-                SOL_SOCKET,
-                SO_SNDBUF,
-                Some(&send),
-            );
-            let _ = setsockopt(
-                SOCKET(socket.as_raw_socket() as usize),
-                SOL_SOCKET,
-                SO_RCVBUF,
-                Some(&receive),
-            );
+            let _ = setsockopt(handle, SOL_SOCKET, SO_SNDBUF, Some(&send));
+            let _ = setsockopt(handle, SOL_SOCKET, SO_RCVBUF, Some(&receive));
         }
     }
 

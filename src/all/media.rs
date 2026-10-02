@@ -8,7 +8,7 @@ const VIDEO_HELLO: [u8; 4] = *b"PDSU";
 const VIDEO_ACK: [u8; 4] = *b"PDSH";
 const VIDEO_FRAME: [u8; 4] = *b"PDSV";
 const AUDIO_FRAME: [u8; 4] = *b"PDSA";
-const VIDEO_HEADER: usize = 25;
+const VIDEO_HEADER: usize = 33;
 const VIDEO_PAYLOAD: usize = 1150;
 const AUDIO_HEADER: usize = 17;
 const AUDIO_PAYLOAD: usize = 1152;
@@ -56,7 +56,7 @@ pub fn wait_video_peer(
     }
 }
 
-pub fn send_video_frame(socket: &UdpSocket, peer: VideoPeer, sequence: u32, frame: &[u8]) {
+pub fn send_video_frame(socket: &UdpSocket, peer: VideoPeer, sequence: u32, timestamp: u64, frame: &[u8]) {
     let Ok(length) = u32::try_from(frame.len()) else {
         return;
     };
@@ -66,22 +66,39 @@ pub fn send_video_frame(socket: &UdpSocket, peer: VideoPeer, sequence: u32, fram
     }
     let fragments = fragments as u16;
     let mut packet = [0; VIDEO_HEADER + VIDEO_PAYLOAD];
-    packet[..4].copy_from_slice(&VIDEO_FRAME);
     packet[4] = protocol::VERSION;
     packet[5..13].copy_from_slice(&peer.nonce);
     packet[13..17].copy_from_slice(&sequence.to_be_bytes());
     packet[19..21].copy_from_slice(&fragments.to_be_bytes());
     packet[21..25].copy_from_slice(&length.to_be_bytes());
+    packet[25..33].copy_from_slice(&timestamp.to_be_bytes());
+    let started = Instant::now();
+    let spread = Duration::from_micros((u64::from(fragments) * 150).min(8000));
+    let mut parity = [0u8; VIDEO_PAYLOAD];
     for index in 0..fragments {
+        if index > 0 && index % 4 == 0 {
+            let due = spread * u32::from(index) / u32::from(fragments);
+            if let Some(wait) = due.checked_sub(started.elapsed()) { thread::sleep(wait); }
+        }
+        packet[..4].copy_from_slice(&VIDEO_FRAME);
         let start = usize::from(index) * VIDEO_PAYLOAD;
         let end = (start + VIDEO_PAYLOAD).min(frame.len());
         packet[17..19].copy_from_slice(&index.to_be_bytes());
+        for (accumulator, value) in parity.iter_mut().zip(&frame[start..end]) { *accumulator ^= *value; }
         packet[VIDEO_HEADER..VIDEO_HEADER + end - start].copy_from_slice(&frame[start..end]);
         if socket
             .send_to(&packet[..VIDEO_HEADER + end - start], peer.address)
             .is_err()
         {
             return;
+        }
+        if index % 8 == 7 || index + 1 == fragments {
+            packet[..4].copy_from_slice(b"PDSF");
+            packet[17..19].copy_from_slice(&(index / 8 * 8).to_be_bytes());
+            packet[VIDEO_HEADER..].copy_from_slice(&parity);
+            let length = (frame.len() - usize::from(index / 8 * 8) * VIDEO_PAYLOAD).min(VIDEO_PAYLOAD);
+            let _ = socket.send_to(&packet[..VIDEO_HEADER + length], peer.address);
+            parity.fill(0);
         }
     }
 }

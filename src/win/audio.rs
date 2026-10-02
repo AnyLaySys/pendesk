@@ -15,6 +15,15 @@ use windows::core::Result;
 const AUDCLNT_BUFFERFLAGS_SILENT: u32 = 2;
 pub const FRAME_SAMPLES: usize = 960;
 
+pub(crate) fn default_render_client() -> Result<IAudioClient> {
+    unsafe {
+        let enumerator: IMMDeviceEnumerator =
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
+        let device = enumerator.GetDefaultAudioEndpoint(eRender, eConsole)?;
+        device.Activate(CLSCTX_ALL, None)
+    }
+}
+
 pub struct Audio {
     client: IAudioClient,
     capture: IAudioCaptureClient,
@@ -25,10 +34,7 @@ impl Audio {
     pub fn new() -> Result<Self> {
         unsafe {
             CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
-            let enumerator: IMMDeviceEnumerator =
-                CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
-            let device = enumerator.GetDefaultAudioEndpoint(eRender, eConsole)?;
-            let client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
+            let client = default_render_client()?;
             let format = WAVEFORMATEX {
                 wFormatTag: WAVE_FORMAT_PCM as u16,
                 nChannels: 2,

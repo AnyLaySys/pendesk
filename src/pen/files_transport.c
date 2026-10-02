@@ -47,8 +47,7 @@ int files_write_all(int fd, const void *data, size_t length) {
         if (count > 0) {
             bytes += count;
             length -= (size_t) count;
-        } else if (count <= 0 &&
-                   (count == 0 || (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK))) {
+        } else if (count == 0 || (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK)) {
             return -1;
         }
     }
@@ -118,7 +117,7 @@ int files_remote_open(const struct files *files, uint8_t operation) {
     return fd;
 }
 
-int files_write_u16(int fd, uint16_t value) {
+static int files_write_u16(int fd, uint16_t value) {
     uint8_t bytes[2] = {(uint8_t)(value >> 8), (uint8_t) value};
     return files_write_all(fd, bytes, sizeof(bytes));
 }

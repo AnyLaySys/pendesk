@@ -19,7 +19,10 @@ enum {
     FILE_DIRECTORY = 4
 };
 enum {
-    FILE_STATUS_NONE, FILE_STATUS_SELECTED, FILE_STATUS_SUCCESS, FILE_STATUS_FAILED,
+    FILE_STATUS_NONE,
+    FILE_STATUS_SELECTED,
+    FILE_STATUS_SUCCESS,
+    FILE_STATUS_FAILED,
     FILE_STATUS_TRANSFER
 };
 #define FILE_STATE "/tmp/pendesk-files.json"
@@ -58,8 +61,6 @@ int files_read_all(int fd, void *data, size_t length);
 int files_write_all(int fd, const void *data, size_t length);
 
 int files_remote_open(const struct files *files, uint8_t operation);
-
-int files_write_u16(int fd, uint16_t value);
 
 int files_read_u16(int fd, uint16_t *value);
 

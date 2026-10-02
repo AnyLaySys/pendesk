@@ -9,6 +9,6 @@
 struct audio;
 
 int media_receive(struct input_state *input, struct preview *preview, struct video *video,
-                  const struct cfg *cfg, struct audio *audio, bool configured);
+                  const struct cfg *cfg, struct audio *audio, bool configured, uint64_t now);
 
 #endif

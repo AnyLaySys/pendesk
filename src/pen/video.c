@@ -10,6 +10,7 @@
 #include "mic.h"
 #include "preview.h"
 #include "media_receive.h"
+#include "video_control.h"
 #include <errno.h>
 #include <poll.h>
 #include <string.h>
@@ -22,30 +23,6 @@ static uint64_t milliseconds(void) {
     return (uint64_t) now.tv_sec * 1000 + (uint32_t) now.tv_nsec / 1000000;
 }
 
-static uint16_t read_u16(const uint8_t *source) {
-    return (uint16_t)((uint16_t) source[0] << 8 | source[1]);
-}
-
-static int apply_control(struct input_state *input, struct audio *audio, const uint8_t packet[10]) {
-    struct view view;
-    if (packet[0] == 0x11) {
-        if (packet[1] == 1) audio_start(audio);
-        else if (packet[1] == 0) audio_stop(audio);
-        else return -1;
-        return 1;
-    }
-    if (packet[0] != 0x10 || packet[1] != 2) return -1;
-    view.x = read_u16(packet + 2);
-    view.y = read_u16(packet + 4);
-    view.width = read_u16(packet + 6);
-    view.height = read_u16(packet + 8);
-    if (!view.width || !view.height || (uint32_t) view.x + view.width > input->video.width ||
-        (uint32_t) view.y + view.height > input->video.height)
-        return -1;
-    input_set_view(input, view);
-    return 0;
-}
-
 void video_receive(struct input_state *input, struct preview *preview, struct video *video,
                    const struct cfg *cfg) {
     struct link *link = input->link;
@@ -55,6 +32,8 @@ void video_receive(struct input_state *input, struct preview *preview, struct vi
     uint8_t control[128];
     size_t control_length = 0;
     uint64_t next_hello = 0;
+    uint64_t next_keyframe = 0;
+    preview_reset(preview);
     bool configured = false;
     bool microphone_announced = false;
     audio_init(&audio);
@@ -99,17 +78,21 @@ void video_receive(struct input_state *input, struct preview *preview, struct vi
                                   {.fd = camera.process > 0 ? camera.fd : -1, .events = POLLIN}};
         uint64_t now = milliseconds();
         int result;
+        if (now >= next_keyframe && atomic_exchange(&preview->keyframe, false)) {
+            const uint8_t request = 0x2b;
+            if (link_send(link, &request, 1) != 0) break;
+            next_keyframe = now + 100;
+        }
         if (!video->connected && now >= next_hello) {
             link_hello(video, cfg);
             next_hello = now + 100;
         }
-        result = poll(events, sizeof(events) / sizeof(events[0]), 100);
+        result = poll(events, sizeof(events) / sizeof(events[0]), 5);
         if (result < 0) {
             if (errno == EINTR) continue;
             break;
         }
-        if (events[1].revents & POLLIN &&
-            media_receive(input, preview, video, cfg, &audio, configured) != 0)
+        if (media_receive(input, preview, video, cfg, &audio, configured, milliseconds()) != 0)
             break;
         if (events[2].revents & POLLIN && mic_forward(&microphone, video, cfg) != 0) break;
         if (events[3].revents & POLLIN && cam_forward(&camera, video, cfg) != 0) break;
@@ -120,7 +103,7 @@ void video_receive(struct input_state *input, struct preview *preview, struct vi
                 if (length > 0) {
                     control_length += (size_t) length;
                     while (control_length >= 10) {
-                        int applied = apply_control(input, &audio, control);
+                        int applied = video_control(input, &audio, control);
                         if (applied < 0) goto done;
                         if (applied == 0) configured = true;
                         memmove(control, control + 10, control_length - 10);

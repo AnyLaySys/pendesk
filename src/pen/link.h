@@ -4,6 +4,7 @@
 #include "cfg.h"
 #include "input.h"
 #include "protocol.h"
+#include "video_frames.h"
 #include <stdbool.h>
 #include <pthread.h>
 #include <stddef.h>
@@ -19,18 +20,8 @@ struct video {
     int association;
     int fd;
     uint8_t nonce[8];
-    uint8_t *frame;
-    size_t capacity;
-    uint8_t *fragments;
-    size_t fragments_capacity;
-    uint32_t sequence;
-    uint32_t length;
-    uint16_t fragment_count;
-    uint16_t fragments_received;
-    bool assembling;
-    bool has_sequence;
+    struct video_frames frames;
     bool connected;
-    bool fresh;
 };
 
 void link_init(struct link *link);

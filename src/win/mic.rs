@@ -3,13 +3,11 @@ use std::collections::VecDeque;
 use std::io;
 use windows::Win32::Foundation::E_NOTIMPL;
 use windows::Win32::Media::Audio::{
-    AUDCLNT_SHAREMODE_SHARED, IAudioClient, IAudioRenderClient, IMMDeviceEnumerator,
-    MMDeviceEnumerator, WAVEFORMATEXTENSIBLE, eConsole, eRender,
+    AUDCLNT_SHAREMODE_SHARED, IAudioClient, IAudioRenderClient, WAVEFORMATEXTENSIBLE,
 };
 use windows::Win32::Media::Multimedia::{KSDATAFORMAT_SUBTYPE_IEEE_FLOAT, WAVE_FORMAT_IEEE_FLOAT};
 use windows::Win32::System::Com::{
-    CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
-    CoUninitialize,
+    COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize,
 };
 use windows::core::Error as WindowsError;
 
@@ -41,14 +39,7 @@ impl Playback {
 
     fn open() -> io::Result<Self> {
         unsafe {
-            let enumerator: IMMDeviceEnumerator =
-                CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-                    .map_err(|error| io::Error::other(error.to_string()))?;
-            let device = enumerator
-                .GetDefaultAudioEndpoint(eRender, eConsole)
-                .map_err(|error| io::Error::other(error.to_string()))?;
-            let client: IAudioClient = device
-                .Activate(CLSCTX_ALL, None)
+            let client = crate::audio::default_render_client()
                 .map_err(|error| io::Error::other(error.to_string()))?;
             let format = client
                 .GetMixFormat()

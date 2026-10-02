@@ -9,6 +9,10 @@
 #include <time.h>
 #include <unistd.h>
 
+enum {
+    TAP_HOLD_MS = 300
+};
+
 static uint16_t scale(int value, int minimum, int maximum) {
     int64_t range;
     int64_t scaled;
@@ -32,15 +36,10 @@ static bool map_touch(const struct input_state *input, const struct contact *con
     uint64_t packed = atomic_load(&input->view);
     struct view view = {.height = (uint16_t) packed, .width = (uint16_t)(
             packed >> 16), .x = (uint16_t)(packed >> 48), .y = (uint16_t)(packed >> 32)};
-    uint32_t offset_x;
-    uint32_t offset_y;
     uint32_t point_x;
     uint32_t point_y;
-    if (!view.width || !view.height || input->video.width > input->mode.width ||
-        input->video.height > input->mode.height)
+    if (!view.width || !view.height)
         return false;
-    offset_x = (input->mode.width - input->video.width) / 2;
-    offset_y = (input->mode.height - input->video.height) / 2;
     point_x = (uint32_t) scale(contact->x, touch->x_min, touch->x_max) * (input->mode.width - 1) /
               UINT16_MAX;
     point_y = (uint32_t) scale(contact->y, touch->y_min, touch->y_max) * (input->mode.height - 1) /
@@ -49,11 +48,6 @@ static bool map_touch(const struct input_state *input, const struct contact *con
                                             (point_x < 6 || point_x + 6 >= input->mode.width ||
                                              (point_x + 44 >= input->mode.width && point_y < 60))))
         return false;
-    if (point_x < offset_x || point_y < offset_y || point_x >= offset_x + input->video.width ||
-        point_y >= offset_y + input->video.height)
-        return false;
-    point_x -= offset_x;
-    point_y -= offset_y;
     if (point_x < view.x || point_y < view.y || point_x >= (uint32_t) view.x + view.width ||
         point_y >= (uint32_t) view.y + view.height)
         return false;
@@ -77,12 +71,6 @@ static int input_send_button(struct input_state *input, uint8_t button, bool dow
     return link_send(input->link, packet, sizeof(packet));
 }
 
-static int input_send_move(struct input_state *input, int16_t x, int16_t y) {
-    uint16_t dx = (uint16_t) x;
-    uint16_t dy = (uint16_t) y;
-    uint8_t packet[] = {0x20, (uint8_t)(dx >> 8), (uint8_t) dx, (uint8_t)(dy >> 8), (uint8_t) dy};
-    return link_send(input->link, packet, sizeof(packet));
-}
 
 int input_send_key(struct input_state *input, uint16_t key, bool down) {
     uint8_t packet[] = {0x23, (uint8_t)(key >> 8), (uint8_t) key, down};
@@ -104,8 +92,8 @@ int input_cancel_touch(struct input_state *input) {
 static uint32_t
 touch_distance(const struct input_state *input, uint16_t x0, uint16_t y0, uint16_t x1,
                uint16_t y1) {
-    uint32_t x = (uint32_t) abs((int) x1 - x0) * input->video.width / UINT16_MAX;
-    uint32_t y = (uint32_t) abs((int) y1 - y0) * input->video.height / UINT16_MAX;
+    uint32_t x = (uint32_t) abs((int) x1 - x0) * input->mode.width / UINT16_MAX;
+    uint32_t y = (uint32_t) abs((int) y1 - y0) * input->mode.height / UINT16_MAX;
     return x > y ? x + y / 2 : y + x / 2;
 }
 
@@ -117,8 +105,8 @@ int input_touch_flush(struct input_state *input) {
     uint16_t y;
     uint16_t other_x;
     uint16_t other_y;
-    uint64_t now = milliseconds();
     if (!input->mouse) return input_cancel_touch(input);
+    uint64_t now = milliseconds();
     for (int index = 0; index != CONTACTS; ++index) {
         if (!touch->contacts[index].active) continue;
         if (first < 0) first = index;
@@ -133,7 +121,7 @@ int input_touch_flush(struct input_state *input) {
         if (gesture == GESTURE_DRAG) return input_send_button(input, 1, false);
         uint8_t button = gesture == GESTURE_TAP ? 1 :
                          (gesture == GESTURE_PAIR || gesture == GESTURE_PAIR_END) &&
-                         now - touch->started < 300 ? 2 : 0;
+                         now - touch->started < TAP_HOLD_MS ? 2 : 0;
         if (button) {
             uint8_t packet[] = {0x21, button, 1, 0x21, button, 0};
             return link_send(input->link, packet, sizeof(packet));
@@ -173,7 +161,7 @@ int input_touch_flush(struct input_state *input) {
             if (delta) touch->distance = distance;
         } else {
             delta = (int32_t)(
-                    (int64_t)((int32_t) x - touch->last_x) * input->video.width * 3 / UINT16_MAX);
+                    (int64_t)((int32_t) x - touch->last_x) * input->mode.width * 3 / UINT16_MAX);
             if (delta) touch->last_x = x;
         }
         return delta ? input_send_delta(input, touch->gesture == GESTURE_ZOOM ? 0x24 : 0x26,
@@ -194,7 +182,7 @@ int input_touch_flush(struct input_state *input) {
     if (touch->gesture == GESTURE_TAP) {
         if (touch_distance(input, x, y, touch->origin_x, touch->origin_y) > 3)
             touch->gesture = GESTURE_MOVE;
-        else if (now - touch->started >= 300) {
+        else if (now - touch->started >= TAP_HOLD_MS) {
             touch->gesture = GESTURE_DRAG;
             return input_send_button(input, 1, true);
         } else return 0;

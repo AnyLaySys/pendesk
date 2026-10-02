@@ -44,8 +44,9 @@ static void *input_loop(void *argument) {
 }
 
 int input_open(struct input_state *input, const char *config) {
-    *input = (struct input_state) {.blocked = true, .mouse = false, .control = -1};
-    if (input_devices_open(&input->inputs) != 0 ||
+    *input = (struct input_state) {.blocked = true, .control = -1, .pan_mutex = PTHREAD_MUTEX_INITIALIZER};
+    input->pan = pan_open(1);
+    if (!input->pan || input_devices_open(&input->inputs) != 0 ||
         cfg_control_path(input->control_path, sizeof(input->control_path), config) != 0) {
         input_close(input);
         return -1;
@@ -80,13 +81,16 @@ void input_close(struct input_state *input) {
     for (size_t index = 0; index < input->inputs.keyboard_count; ++index)
         close(input->inputs.keyboard[index]);
     free(input->inputs.keyboard);
+    pan_close(input->pan);
+    pthread_mutex_destroy(&input->pan_mutex);
     *input = (struct input_state) {.control = -1};
 }
 
 int input_start(struct input_state *input, struct link *link, struct mode mode) {
     input->link = link;
     input->mode = mode;
-    input->video = mode;
+    if (input->pan) atomic_store(&input->pan->display, (uint32_t) mode.height << 16 | mode.width);
+    input->move_sequence = 0;
     input->inputs.touch.gesture = GESTURE_CANCEL;
     input_set_view(input, (struct view) {0});
     return pthread_create(&input->thread, NULL, input_loop, input) == 0

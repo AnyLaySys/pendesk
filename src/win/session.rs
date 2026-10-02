@@ -1,11 +1,9 @@
-use crate::all::args::Config;
 use crate::all::cam::Receiver as CameraReceiver;
+use crate::all::cmd::Config;
 use crate::all::media as transport;
-use crate::all::protocol::{self, Input};
-use crate::audio::{self, Audio};
-use crate::encoder::Jpeg;
+use crate::all::protocol;
+use crate::encoder::H264;
 use crate::gpu::Gpu;
-use crate::input;
 use crate::media::{self, MicSocket};
 use crate::screen::Screen;
 use crate::signal::Signal;
@@ -16,7 +14,6 @@ use std::sync::{
     Arc, Condvar, Mutex,
     atomic::{AtomicBool, Ordering},
 };
-use std::thread;
 use std::time::{Duration, Instant};
 use windows::Win32::Networking::WinSock::SOCKET;
 
@@ -39,120 +36,111 @@ pub fn run(
     let viewport = Arc::new(Mutex::new(Viewport::new(video)?));
     let signal = Signal::new()?;
     let mut screen = Screen::new(&gpu, video, &mut viewport.lock().unwrap(), &signal)?;
-    let mut encoder = Jpeg::new(config.quality).map_err(|error| error.to_string())?;
+    let mut encoder = H264::new(&gpu, screen.dimensions.0, screen.dimensions.1, config.quality).map_err(|error| error.to_string())?;
     protocol::write_config(&mut stream, screen.view).map_err(|error| error.to_string())?;
+    {
+        let viewport = viewport.lock().unwrap();
+        protocol::write_canvas(&mut stream, viewport.canvas(), viewport.origin()).map_err(|error| error.to_string())?;
+        protocol::write_pointer(&mut stream, viewport.pointer(), 0).map_err(|error| error.to_string())?;
+    }
     let peer = transport::wait_video_peer(video_socket, &config.token, session.nonce)?;
     let mic_socket = MicSocket::new(SOCKET(video_socket.as_raw_socket() as usize))?;
     let active = Arc::new(AtomicBool::new(true));
     let video_active = Arc::new(AtomicBool::new(false));
     let camera_active = Arc::new(AtomicBool::new(false));
+    let refresh = Arc::new(AtomicBool::new(true));
     let audio_gate = Arc::new((Mutex::new(false), Condvar::new()));
-    let audio_thread = start_audio_thread(
+    let audio_thread = crate::session_audio::spawn(
         Arc::clone(&active),
         Arc::clone(&audio_gate),
         video_socket,
         stream.try_clone().map_err(|error| error.to_string())?,
         peer,
     )?;
-    let input_thread = start_input_thread(
+    let input_thread = crate::session_input::spawn(
         Arc::clone(&active),
         Arc::clone(&video_active),
+        Arc::clone(&refresh),
         Arc::clone(&camera_active),
         Arc::clone(&viewport),
         Arc::clone(&signal),
         Arc::clone(&audio_gate),
         stream.try_clone().map_err(|error| error.to_string())?,
     );
-    let interval = Duration::from_secs_f64(1.0 / f64::from(config.fps));
-    let keyframe = Duration::from_secs(1);
+    let interval = Duration::from_secs_f64(1.0 / f64::from(protocol::FPS));
+    let keyframe = Duration::from_secs(5);
     let mut frame = Vec::new();
     let mut sequence = 0u32;
-    let mut last_area = None;
-    let mut last_captured = 0u64;
-    let mut last_sent = Instant::now() - keyframe;
+    let started = Instant::now();
+    let mut last_idr = started - keyframe;
+    let mut next_frame = started;
     let mut playback = None;
     let mut camera_receiver = CameraReceiver::default();
     let mut camera_window = None;
     let result = (|| {
+        let receive = |timeout, playback: &mut _, receiver: &mut _, window: &mut _| {
+            media::wait_socket(&signal, &mic_socket, timeout);
+            media::receive_packets(
+                video_socket,
+                peer,
+                playback,
+                camera_active.load(Ordering::Relaxed),
+                receiver,
+                window,
+            );
+        };
         while active.load(Ordering::Relaxed) {
             if !camera_active.load(Ordering::Relaxed) {
                 camera_receiver.reset();
                 camera_window = None;
             }
             if !video_active.load(Ordering::Relaxed) {
-                media::wait_socket(&signal, &mic_socket, 20);
-                media::receive_packets(
-                    video_socket,
-                    peer,
-                    &mut playback,
-                    camera_active.load(Ordering::Relaxed),
-                    &mut camera_receiver,
-                    &mut camera_window,
-                );
+                next_frame = Instant::now();
+                receive(20, &mut playback, &mut camera_receiver, &mut camera_window);
                 continue;
             }
-            let since = last_sent.elapsed();
-            let milliseconds = if since < keyframe {
-                (if since < interval {
-                    interval - since
-                } else {
-                    keyframe - since
-                })
-                .as_millis() as u32
-            } else {
-                interval.as_millis() as u32
-            };
-            media::wait_socket(&signal, &mic_socket, milliseconds);
-            media::receive_packets(
-                video_socket,
-                peer,
-                &mut playback,
-                camera_active.load(Ordering::Relaxed),
-                &mut camera_receiver,
-                &mut camera_window,
-            );
+            let milliseconds = next_frame.saturating_duration_since(Instant::now()).as_micros().div_ceil(1000) as u32;
+            receive(milliseconds, &mut playback, &mut camera_receiver, &mut camera_window);
             if !active.load(Ordering::Relaxed)
                 || !video_active.load(Ordering::Relaxed)
-                || last_sent.elapsed() < interval
+                || Instant::now() < next_frame
             {
                 continue;
             }
-            if screen.changed() {
+            let canvas = viewport.lock().unwrap().canvas();
+            if screen.changed() || screen.dimensions != (u32::from(canvas.width), u32::from(canvas.height)) {
                 screen = Screen::new(&gpu, video, &mut viewport.lock().unwrap(), &signal)?;
                 protocol::write_config(&mut stream, screen.view)
                     .map_err(|error| error.to_string())?;
+                encoder = H264::new(&gpu, screen.dimensions.0, screen.dimensions.1, config.quality)
+                    .map_err(|error| error.to_string())?;
+                let viewport = viewport.lock().unwrap();
+                protocol::write_canvas(&mut stream, viewport.canvas(), viewport.origin()).map_err(|error| error.to_string())?;
+                protocol::write_pointer(&mut stream, viewport.pointer(), viewport.input_sequence).map_err(|error| error.to_string())?;
+                refresh.store(true, Ordering::Relaxed);
             }
-            let area = viewport.lock().unwrap().capture();
-            let before = last_captured;
+            let now = Instant::now();
+            let area = {
+                let mut viewport = viewport.lock().unwrap();
+                viewport.advance(now);
+                viewport.capture_source()
+            };
             let captured = match screen.capture(area)? {
                 Some(captured) => captured,
                 None => {
-                    media::wait_socket(&signal, &mic_socket, 20);
-                    media::receive_packets(
-                        video_socket,
-                        peer,
-                        &mut playback,
-                        camera_active.load(Ordering::Relaxed),
-                        &mut camera_receiver,
-                        &mut camera_window,
-                    );
+                    receive(20, &mut playback, &mut camera_receiver, &mut camera_window);
                     continue;
                 }
             };
-            last_captured = captured.captured;
-            if last_sent.elapsed() >= keyframe
-                || before != captured.captured
-                || last_area != Some(area)
-            {
-                last_area = Some(area);
-                encoder
-                    .encode(&captured, &mut frame)
-                    .map_err(|error| error.to_string())?;
-                if !frame.is_empty() {
-                    sequence = sequence.wrapping_add(1);
-                    last_sent = Instant::now();
-                    transport::send_video_frame(video_socket, peer, sequence, &frame);
-                }
+            next_frame += interval;
+            if next_frame <= now { next_frame = now + interval; }
+            let keyframe = refresh.swap(false, Ordering::Relaxed) || last_idr.elapsed() >= keyframe;
+            encoder.encode(&captured, keyframe, &mut frame).map_err(|error| error.to_string())?;
+            if keyframe { last_idr = now; }
+            if !frame.is_empty() {
+                sequence = sequence.wrapping_add(1);
+                let timestamp = now.duration_since(started).as_micros() as u64 * 9 / 100;
+                transport::send_video_frame(video_socket, peer, sequence, timestamp, &frame);
             }
         }
         Ok(())
@@ -164,173 +152,4 @@ pub fn run(
     let _ = input_thread.join();
     let _ = audio_thread.join();
     result
-}
-
-fn start_audio_thread(
-    active: Arc<AtomicBool>,
-    gate: Arc<(Mutex<bool>, Condvar)>,
-    video_socket: &UdpSocket,
-    mut stream: TcpStream,
-    peer: transport::VideoPeer,
-) -> Result<thread::JoinHandle<()>, String> {
-    let socket = video_socket
-        .try_clone()
-        .map_err(|error| error.to_string())?;
-    Ok(thread::spawn(move || {
-        let mut samples = Vec::new();
-        let mut frame = Vec::with_capacity(audio::FRAME_SAMPLES * 2);
-        let mut encoded = [0; 1152];
-        let mut sequence = 0u32;
-        while active.load(Ordering::Relaxed) {
-            {
-                let (lock, cond) = &*gate;
-                let mut on = lock.lock().unwrap();
-                while !*on && active.load(Ordering::Relaxed) {
-                    on = cond.wait(on).unwrap();
-                }
-            }
-            if !active.load(Ordering::Relaxed) {
-                break;
-            }
-            let Ok(mut audio) = Audio::new() else {
-                continue;
-            };
-            let Ok(mut encoder) = audio::encoder() else {
-                break;
-            };
-            if protocol::write_audio(&mut stream).is_err() {
-                break;
-            }
-            while active.load(Ordering::Relaxed) && *gate.0.lock().unwrap() {
-                if audio.read(&mut samples).is_err() {
-                    break;
-                }
-                frame.extend_from_slice(&samples);
-                while frame.len() >= audio::FRAME_SAMPLES * 2 {
-                    let Ok(length) =
-                        encoder.encode(&frame[..audio::FRAME_SAMPLES * 2], &mut encoded)
-                    else {
-                        break;
-                    };
-                    transport::send_audio_frame(&socket, peer, &mut sequence, &encoded[..length]);
-                    frame.drain(..audio::FRAME_SAMPLES * 2);
-                }
-            }
-            frame.clear();
-            if protocol::stop_audio(&mut stream).is_err() {
-                break;
-            }
-        }
-    }))
-}
-
-fn start_input_thread(
-    active: Arc<AtomicBool>,
-    video_active: Arc<AtomicBool>,
-    camera_active: Arc<AtomicBool>,
-    viewport: Arc<Mutex<Viewport>>,
-    signal: Arc<Signal>,
-    audio_gate: Arc<(Mutex<bool>, Condvar)>,
-    mut stream: TcpStream,
-) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
-        let mut pressed_keys = [false; 256];
-        let mut pressed_buttons = [false; 4];
-        let mut active_touches = [None; 10];
-        while active.load(Ordering::Relaxed) {
-            match protocol::read_input(&mut stream) {
-                Ok(Input::Move(x, y)) => {
-                    let (x, y) = viewport.lock().unwrap().move_pointer(x, y);
-                    let _ = input::move_pointer(x, y);
-                }
-                Ok(Input::Button(button, down)) if (1..=3).contains(&button) => {
-                    if input::button(button, down).is_ok() {
-                        pressed_buttons[usize::from(button)] = down;
-                    }
-                }
-                Ok(Input::Key(key, down)) if key < 256 => {
-                    if input::key(key, down).is_ok() {
-                        pressed_keys[usize::from(key)] = down;
-                    }
-                }
-                Ok(Input::Zoom(delta)) => viewport.lock().unwrap().zoom(delta),
-                Ok(Input::Video(enabled)) => {
-                    if !enabled {
-                        for (key, pressed) in pressed_keys.iter_mut().enumerate() {
-                            if *pressed {
-                                let _ = input::key(key as u16, false);
-                                *pressed = false;
-                            }
-                        }
-                        for (button, pressed) in pressed_buttons.iter_mut().enumerate().skip(1) {
-                            if *pressed {
-                                let _ = input::button(button as u8, false);
-                                *pressed = false;
-                            }
-                        }
-                    }
-                    video_active.store(enabled, Ordering::Relaxed);
-                    signal.set();
-                }
-                Ok(Input::Wheel(delta)) => {
-                    let _ = input::wheel(delta);
-                }
-                Ok(Input::Touch(points)) => {
-                    let view = viewport.lock().unwrap();
-                    let contacts = points
-                        .iter()
-                        .map(|point| {
-                            let (x, y) = view.touch_point(point.x, point.y);
-                            input::TouchContact {
-                                id: point.id,
-                                phase: point.phase,
-                                x,
-                                y,
-                            }
-                        })
-                        .collect::<Vec<_>>();
-                    drop(view);
-                    if input::touch(&contacts).is_ok() {
-                        for contact in contacts {
-                            active_touches[usize::from(contact.id)] = if contact.phase == 3 {
-                                None
-                            } else {
-                                Some(contact)
-                            };
-                        }
-                    }
-                }
-                Ok(Input::Audio(enabled)) => {
-                    *audio_gate.0.lock().unwrap() = enabled;
-                    audio_gate.1.notify_one();
-                }
-                Ok(Input::Camera(enabled)) => {
-                    camera_active.store(enabled, Ordering::Relaxed);
-                    signal.set();
-                }
-                _ => break,
-            }
-        }
-        let releases = active_touches
-            .into_iter()
-            .flatten()
-            .map(|mut contact| {
-                contact.phase = 3;
-                contact
-            })
-            .collect::<Vec<_>>();
-        let _ = input::touch(&releases);
-        for (key, pressed) in pressed_keys.into_iter().enumerate() {
-            if pressed {
-                let _ = input::key(key as u16, false);
-            }
-        }
-        for (button, pressed) in pressed_buttons.into_iter().enumerate().skip(1) {
-            if pressed {
-                let _ = input::button(button as u8, false);
-            }
-        }
-        active.store(false, Ordering::Relaxed);
-        signal.set();
-    })
 }

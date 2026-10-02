@@ -1,169 +1,51 @@
 ﻿param(
-    [Parameter(Position = 0)][ValidateSet('build', 'install', 'configure')][string]$action = 'build',
-    [string]$authkey,
-    [string]$hostaddress,
-    [ValidateRange(1, 65535)][int]$port = 999,
-    [string]$serial,
-    [string]$token
+    [Parameter(Position = 0)][ValidateSet('clean')][string]$action
 )
 
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
-$target = Join-Path $root 'build\target'; $out = Join-Path $root 'build\out'
+$build = Join-Path $root 'build'
+$target = Join-Path $build 'target'; $out = Join-Path $build 'out'
 $penBuild = Join-Path $out 'pen'
 $penSource = Join-Path $root 'src\pen'; $miniAppSource = Join-Path $penSource 'miniapp'
-$hostExecutable = Join-Path $out 'pendesk.exe'
+$windowsExecutable = Join-Path $out 'pendesk.exe'
 $package = Join-Path $out 'pendesk.amr'; $state = Join-Path $env:LOCALAPPDATA 'PenDesk'
-$portSpecified = $PSBoundParameters.ContainsKey('port')
 
 function Temporary-Path([string]$Name) {
     $directory = [IO.Path]::GetFullPath($env:TEMP).TrimEnd('\') + '\'
     $path = [IO.Path]::GetFullPath((Join-Path $directory "pendesk-$PID-$([guid]::NewGuid().ToString('N'))-$Name"))
-    if (!$path.StartsWith($directory, [StringComparison]::OrdinalIgnoreCase)) { throw '临时路径错误' }
+    if (!$path.StartsWith($directory, [StringComparison]::OrdinalIgnoreCase)) { throw '路径错误' }
     $path
-}
-
-function Protect-Path([string]$Path) {
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent().User
-    & icacls.exe $Path '/inheritance:r' '/grant:r' "*$($identity.Value):(F)" '*S-1-5-18:(F)' | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "权限设置失败：$Path" }
 }
 
 function Get-MiniAppManifest {
     $manifest = Get-Content -LiteralPath (Join-Path $miniAppSource 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ([string]$manifest.appid -notmatch '^\d+$') { throw 'MiniApp ID 无效' }
+    if ([string]$manifest.appid -notmatch '^\d+$') { throw 'MiniApp ID无效' }
     $manifest
 }
 
 function Require([string]$Path) {
-    if (!(Test-Path -LiteralPath $Path -PathType Leaf)) { throw "文件缺失：$Path" }
-}
-
-function TailscalePath {
-    $command = Get-Command tailscale -ErrorAction SilentlyContinue
-    if ($command) { return $command.Source }
-    $path = Join-Path $env:ProgramFiles 'Tailscale\tailscale.exe'
-    if (Test-Path -LiteralPath $path -PathType Leaf) { return $path }
-    throw '未安装 Tailscale'
-}
-
-function Invoke-ADB([string[]]$Arguments) {
-    & (Get-Command adb -ErrorAction Stop).Source @Arguments
-    if ($LASTEXITCODE -ne 0) { throw 'ADB 执行失败' }
-}
-
-function Invoke-Pen([string]$Command) {
-    $result = (Invoke-ADB @('-s', $serial, 'shell', "$Command; result=`$?; echo; echo PENDESK_STATUS:`$result")) -join "`n"
-    if ($result -notmatch '(?m)^PENDESK_STATUS:0\s*$') {
-        if ($result -match 'shell auth|password:') { throw "请先授权词典笔：adb -s $serial shell auth" }
-        throw '词典笔命令失败'
-    }
-    ($result -replace '(?m)^PENDESK_STATUS:0\s*$', '').Trim()
-}
-
-function Confirm-Pen {
-    $devices = @(Invoke-ADB @('devices') | ForEach-Object {
-        if ($_ -match '^\s*(\S+)\s+device(?:\s|$)') { $Matches[1] }
-    })
-    if (!$serial) {
-        if ($devices.Count -ne 1) { throw '请指定 -Serial' }
-        $script:serial = $devices[0]
-    } elseif ($devices -notcontains $serial) { throw 'ADB 设备未就绪' }
-    $ready = Invoke-Pen 'test "$(uname -m)" = aarch64 && command -v miniapp_cli >/dev/null && command -v gst-launch-1.0 >/dev/null && echo PENDESK_LINUX_PEN'
-    if ($ready -ne 'PENDESK_LINUX_PEN') { throw '设备不是目标词典笔' }
-}
-
-function Installed-App([switch]$Optional) {
-    $appID = [string](Get-MiniAppManifest).appid
-    $find = 'latest=; for file in /userdisk/*/data/mini_app/pkg/__APPID__/*/bin/run /userdisk/*/*/data/mini_app/pkg/__APPID__/*/bin/run /userdata/*/data/mini_app/pkg/__APPID__/*/bin/run /userdata/*/*/data/mini_app/pkg/__APPID__/*/bin/run; do [ -f "$file" ] || continue; if [ -z "$latest" ] || [ "$file" -nt "$latest" ]; then latest=$file; fi; done; printf "%s" "$latest"'
-    $start = Invoke-Pen ($find.Replace('__APPID__', $appID))
-    if (!$start -and $Optional) { return }
-    if ($start -notmatch "^/(?:userdisk|userdata)/[A-Za-z0-9_/-]+/mini_app/pkg/$appID/[^/]+/bin/run$") { throw '请先安装通用 AMR' }
-    $package = $start -replace '/[^/]+/bin/run$', ''
-    @{ start=$start; data="$package/data"; slot=($start -replace '/bin/run$', '') }
-}
-
-function Login-Pen {
-    Confirm-Pen
-    $app = Installed-App
-    Invoke-Pen "/bin/sh '$($app.start)' network" | Out-Null
-    if ($authkey) {
-        $temporary = Temporary-Path 'auth'
-        try {
-            [IO.File]::WriteAllText($temporary, $authkey, [Text.UTF8Encoding]::new($false))
-            Protect-Path $temporary
-            Invoke-ADB @('-s', $serial, 'push', $temporary, "$($app.data)/auth") | Out-Null
-            Invoke-Pen "chmod 600 '$($app.data)/auth'; /bin/sh '$($app.start)' login" | Out-Null
-        } finally {
-            Remove-Item -LiteralPath $temporary -Force -ErrorAction Ignore
-            Invoke-Pen "rm -f '$($app.data)/auth'" | Out-Null
-        }
-    } else {
-        Invoke-Pen "/bin/sh '$($app.start)' login" | Out-Null
-    }
-    $status = $null
-    for ($attempt = 0; $attempt -lt 12; ++$attempt) {
-        $status = (Invoke-Pen "/bin/sh '$($app.start)' status") | ConvertFrom-Json
-        if ($status.AuthURL -or $status.BackendState -in @('Running', 'NeedsMachineAuth')) { break }
-        Start-Sleep -Seconds 1
-    }
-    Write-Output "Tailscale：$($status.BackendState)"
-    if ($status.AuthURL) {
-        Write-Output "请在浏览器授权：$($status.AuthURL)"
-        Write-Output '授权后自动重连'
-    } elseif ($status.BackendState -ne 'Running') {
-        Write-Output '授权或网络未就绪，请检查 Wi-Fi 后重试'
-    }
-}
-
-function Install-Package([string]$Package) {
-    Require $Package
-    Confirm-Pen
-    $previous = Installed-App -Optional
-    if ($previous) {
-        Invoke-Pen "if [ ! -f '$($previous.data)/config' ] && [ -s '$($previous.slot)/config' ]; then mkdir -p '$($previous.data)'; cp '$($previous.slot)/config' '$($previous.data)/config'; chmod 600 '$($previous.data)/config'; fi" | Out-Null
-    }
-    Invoke-Pen 'touch /userdata/.disable_app_whitelist_clean && sync && test -f /userdata/.disable_app_whitelist_clean' | Out-Null
-    $remote = "/tmp/pendesk-$PID.amr"
-    Invoke-ADB @('-s', $serial, 'push', $Package, $remote) | Out-Null
-    try {
-        $result = Invoke-Pen "/usr/bin/miniapp_cli install '$remote'"
-        if ($result -notmatch '"ret"\s*:\s*0\b') { throw '安装失败' }
-    } finally {
-        Invoke-Pen "rm -f '$remote'" | Out-Null
-    }
-    Write-Output '通用 AMR 已安装'
+    if (!(Test-Path -LiteralPath $Path -PathType Leaf)) { throw '路径文件缺失' }
 }
 
 function Fetch-Tailscale {
     $version = '1.102.4'
     $cache = Join-Path $env:LOCALAPPDATA 'PenDesk\tailscale-release'
     $archive = Join-Path $cache "tailscale_${version}_arm64.tgz"
-    $expected = '9DD1E6A592A014BBAEA0103167FFE299ADEDA4BA14E078CE9C2895364F6C4C3F'
-    $hashes = @{
-        tailscale = '93C3558F592200133B377DD9F96EAC9B278B9057F7AE6B8656B15F4FA05506D0'
-        tailscaled = '1FF5174FCBF3ABBFF85EACC73E6E548B0D094D913A48C1369F60811D1E92EEEF'
-    }
-    $ready = $true
-    foreach ($name in $hashes.Keys) {
-        $path = Join-Path $penBuild $name
-        if (!(Test-Path -LiteralPath $path) -or (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $hashes[$name]) { $ready = $false }
-    }
+    $ready = (Test-Path -LiteralPath (Join-Path $penBuild 'tailscale')) -and (Test-Path -LiteralPath (Join-Path $penBuild 'tailscaled'))
     if ($ready) { return }
     New-Item -ItemType Directory -Force $cache, $penBuild | Out-Null
     if (!(Test-Path -LiteralPath $archive)) {
         curl.exe -fL "https://pkgs.tailscale.com/stable/tailscale_${version}_arm64.tgz" -o $archive
-        if ($LASTEXITCODE -ne 0) { throw 'Tailscale 下载失败' }
+        if ($LASTEXITCODE -ne 0) { throw 'Tailscale下载失败' }
     }
-    if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $expected) { throw 'Tailscale 压缩包校验失败' }
     $extract = Temporary-Path 'tailscale'
     try {
         New-Item -ItemType Directory -Force $extract | Out-Null
         tar -xf $archive -C $extract
-        if ($LASTEXITCODE -ne 0) { throw 'Tailscale 解压失败' }
-        foreach ($name in $hashes.Keys) {
+        if ($LASTEXITCODE -ne 0) { throw 'Tailscale解压失败' }
+        foreach ($name in @('tailscale', 'tailscaled')) {
             $source = Join-Path $extract "tailscale_${version}_arm64\$name"
-            if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $hashes[$name]) { throw 'Tailscale 二进制校验失败' }
             Copy-Item -LiteralPath $source -Destination (Join-Path $penBuild $name) -Force
         }
     } finally {
@@ -179,7 +61,7 @@ function Build-LinuxArtifacts {
         New-Item -ItemType Directory -Force $state | Out-Null
         if (!(Test-Path -LiteralPath $archive)) {
             curl.exe -fL https://bellard.org/quickjs/quickjs-2020-07-05.tar.xz -o $archive
-            if ($LASTEXITCODE -ne 0) { throw 'QuickJS 下载失败' }
+            if ($LASTEXITCODE -ne 0) { throw 'QuickJS下载失败' }
         }
     }
     $stage = Temporary-Path 'qjs'
@@ -188,7 +70,7 @@ function Build-LinuxArtifacts {
         Copy-Item (Join-Path $miniAppSource 'app.js') -Destination $stage
         $index = Get-Content (Join-Path $miniAppSource 'index.js') -Raw -Encoding UTF8
         $appID = [string](Get-MiniAppManifest).appid
-        if (!$index.Contains('__APPID__')) { throw 'MiniApp 源码无效' }
+        if (!$index.Contains('__APPID__')) { throw 'MiniApp源码无效' }
         [IO.File]::WriteAllText(
             (Join-Path $stage 'index.js'),
             $index.Replace('__APPID__', $appID),
@@ -207,39 +89,28 @@ stage=$(wslpath -a "$8")
 if [ ! -f "$quickjs/quickjs.c" ]; then
     tar -xf "$archive" -C "$state"
 fi
-cc -O2 -Wno-discarded-qualifiers -I "$quickjs" \
-    -include "$miniapp/qjsconfig.h" -o "$compiler" \
-    "$miniapp/qjscompile.c" "$quickjs/quickjs.c" "$quickjs/cutils.c" \
-    "$quickjs/libregexp.c" "$quickjs/libunicode.c" "$quickjs/libbf.c" \
-    -lm -ldl -lpthread
-aarch64-linux-gnu-gcc -std=c17 -O2 -Wall -Wextra -Werror -pthread -static \
-    "$pen/pdd.c" "$pen/cfg.c" "$pen/io.c" "$pen/link.c" "$pen/input.c" \
-    "$pen/input_control.c" "$pen/input_devices.c" "$pen/input_touch.c" \
-    "$pen/video.c" "$pen/media_receive.c" "$pen/cam_device.c" "$pen/cam_stream.c" \
-    "$pen/audio.c" "$pen/mic.c" "$pen/preview.c" "$pen/files.c" \
-    "$pen/files_transport.c" "$pen/files_panel.c" "$pen/files_transfer.c" \
-    -o "$out/pdd"
+cc -O2 -Wno-discarded-qualifiers -I "$quickjs" -include "$miniapp/qjsconfig.h" -o "$compiler" "$miniapp/qjscompile.c" "$quickjs/quickjs.c" "$quickjs/cutils.c" "$quickjs/libregexp.c" "$quickjs/libunicode.c" "$quickjs/libbf.c" -lm -ldl -lpthread
+aarch64-linux-gnu-gcc -std=c17 -O2 -Wall -Wextra -Werror -pthread -static "$pen/pdd.c" "$pen/cfg.c" "$pen/io.c" "$pen/link.c" "$pen/socks.c" "$pen/nonce.c" "$pen/input.c" "$pen/pan.c" "$pen/input_pan.c" "$pen/input_control.c" "$pen/input_devices.c" "$pen/display.c" "$pen/keymap.c" "$pen/input_touch.c" "$pen/video.c" "$pen/video_control.c" "$pen/media_receive.c" "$pen/video_frames.c" "$pen/cam_device.c" "$pen/cam_stream.c" "$pen/audio.c" "$pen/mic.c" "$pen/record.c" "$pen/preview.c" "$pen/files.c" "$pen/files_transport.c" "$pen/files_panel.c" "$pen/files_transfer.c" -o "$out/pdd"
+aarch64-linux-gnu-gcc -std=c17 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -Wno-cast-function-type -fPIC -shared -Wl,-z,nodelete -DGLIB_VERSION_MIN_REQUIRED=GLIB_VERSION_2_68 -DGLIB_VERSION_MAX_ALLOWED=GLIB_VERSION_2_68 -DGST_VERSION_MIN_REQUIRED=GST_VERSION_1_22 -DGST_VERSION_MAX_ALLOWED=GST_VERSION_1_22 $(PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig pkg-config --cflags gstreamer-app-1.0 | sed 's/-I/-isystem /g') "$miniapp/bridge.c" "$pen/pan.c" -o "$out/libjsapi_vid.so"
 "$compiler" "$stage/app.js" "$out/app.js.bin"
 "$compiler" "$stage/index.js" "$out/index.js.bin" module
 '@
         $script = $script.Replace("`r`n", "`n").Replace("`r", "")
         & wsl.exe --exec bash --noprofile --norc -c $script pendesk $penSource $penBuild $quickJS $archive $state $compiler $miniAppSource $stage
+        if ($LASTEXITCODE -ne 0) { throw "Linux artifacts build failed" }
     } finally {
         Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction Ignore
     }
 }
 
 function Build {
-    Start-Process taskkill.exe -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '/F', '/IM', 'pendesk.exe'
     New-Item -ItemType Directory -Force $target, $penBuild, $out | Out-Null
     & cargo build --release --target-dir $target --manifest-path (Join-Path $root 'Cargo.toml')
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    Copy-Item -LiteralPath (Join-Path $target 'release\pendesk.exe') -Destination $hostExecutable -Force
+    Copy-Item -LiteralPath (Join-Path $target 'release\pendesk.exe') -Destination $windowsExecutable -Force
     Fetch-Tailscale
     Build-LinuxArtifacts
     Build-Package $package
-    & $hostExecutable restart
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
 function New-AMR([string]$Source, [string]$Destination) {
@@ -271,7 +142,7 @@ function Build-Package([string]$Output) {
     $miniAppIcons = @(
         (Join-Path $miniAppSource 'back.png'),
         (Join-Path $miniAppSource 'cam.png'),
-        (Join-Path $miniAppSource 'stop.png'),
+        (Join-Path $miniAppSource 'exit.png'),
         (Join-Path $miniAppSource 'file.png'),
         (Join-Path $miniAppSource 'folder.png'),
         (Join-Path $miniAppSource 'kb.png'),
@@ -280,7 +151,8 @@ function Build-Package([string]$Output) {
         (Join-Path $miniAppSource 'touch.png'),
         (Join-Path $miniAppSource 'view.png'),
         (Join-Path $miniAppSource 'sound.png'),
-        (Join-Path $miniAppSource 'power.png')
+        (Join-Path $miniAppSource 'power.png'),
+        (Join-Path $miniAppSource 'rf.png')
     )
     $requiredFiles = $miniAppFiles + $miniAppIcons + @(
         (Join-Path $miniAppSource 'run'),
@@ -288,6 +160,7 @@ function Build-Package([string]$Output) {
         (Join-Path $penBuild 'app.js.bin'),
         (Join-Path $penBuild 'index.js.bin'),
         (Join-Path $penBuild 'pdd'),
+        (Join-Path $penBuild 'libjsapi_vid.so'),
         (Join-Path $penBuild 'tailscale'),
         (Join-Path $penBuild 'tailscaled')
     )
@@ -301,6 +174,8 @@ function Build-Package([string]$Output) {
         Copy-Item (Join-Path $miniAppSource 'adb-guard') -Destination (Join-Path $stage 'bin\adb-guard')
         Copy-Item (Join-Path $penBuild 'app.js.bin') -Destination $stage
         Copy-Item (Join-Path $penBuild 'index.js.bin') -Destination $stage
+        New-Item -ItemType Directory -Force (Join-Path $stage 'libs') | Out-Null
+        Copy-Item (Join-Path $penBuild 'libjsapi_vid.so') -Destination (Join-Path $stage 'libs/libjsapi_vid.so')
         Copy-Item (Join-Path $penBuild 'pdd') -Destination (Join-Path $stage 'bin\pdd')
         Copy-Item (Join-Path $penBuild 'tailscale') -Destination (Join-Path $stage 'bin\tailscale')
         Copy-Item (Join-Path $penBuild 'tailscaled') -Destination (Join-Path $stage 'bin\tailscaled')
@@ -319,64 +194,11 @@ function Build-Package([string]$Output) {
     }
 }
 
-function Configure {
-    Confirm-Pen
-    $app = Installed-App
-    $tailscale = TailscalePath
-    $localAddress = (& $tailscale ip -4 | ForEach-Object { $_.Trim() } | Select-Object -First 1)
-    if (!$hostaddress) { $hostaddress = $localAddress }
-    $localHost = $hostaddress -eq $localAddress
-    $address = $null
-    if (![Net.IPAddress]::TryParse($hostaddress, [ref]$address) -or $address.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork -or $address.GetAddressBytes()[0] -ne 100 -or $address.GetAddressBytes()[1] -lt 64 -or $address.GetAddressBytes()[1] -gt 127) { throw 'HostAddress 必须是 Tailnet IPv4' }
-    if (!$localHost -and !$token) { throw '缺少远端配对 Token' }
-    if ($localHost) {
-        Require $hostExecutable
-        $status = (& $tailscale status --json) | ConvertFrom-Json
-        if ($LASTEXITCODE -ne 0 -or $status.BackendState -ne 'Running') { throw '请先登录 Windows Tailscale' }
-    }
-    $config = Join-Path $state 'active-config'
-    $previous = if ($localHost -and (Test-Path -LiteralPath $config)) { ConvertFrom-StringData (Get-Content -LiteralPath $config -Raw) } else { @{} }
-    if (!$token -and $previous.token) { $token = $previous.token }
-    if (!$portSpecified -and $previous.port -and [int]$previous.port -ne 7193) { $port = [int]$previous.port }
-    if (!$token) {
-        $bytes = [byte[]]::new(32)
-        $random = [Security.Cryptography.RandomNumberGenerator]::Create()
-        try { $random.GetBytes($bytes) } finally { $random.Dispose() }
-        $token = ([BitConverter]::ToString($bytes) -replace '-', '').ToLower()
-    }
-    if ($token -notmatch '^[0-9a-fA-F]{64}$') { throw 'Token 格式错误' }
-    $private = Temporary-Path 'pairing'
-    New-Item -ItemType Directory -Path $private | Out-Null
-    Protect-Path $private
-    $candidateConfig = Join-Path $private 'config'
-    try {
-        [IO.File]::WriteAllText($candidateConfig, "host=$hostaddress`nport=$port`nsocks=127.0.0.1:1055`ntoken=$token`n", [Text.UTF8Encoding]::new($false))
-        Invoke-Pen "mkdir -p '$($app.data)'; chmod 700 '$($app.data)'" | Out-Null
-        Invoke-ADB @('-s', $serial, 'push', $candidateConfig, "$($app.data)/config.new") | Out-Null
-        Invoke-Pen "/bin/sh '$($app.start)' configure" | Out-Null
-        if ($localHost) {
-            New-Item -ItemType Directory -Force $state | Out-Null
-            Copy-Item -LiteralPath $candidateConfig -Destination $config -Force
-            Protect-Path $config
-        }
-    } finally {
-        Remove-Item -LiteralPath $private -Recurse -Force -ErrorAction Ignore
-    }
-    Write-Output '模式：优先直连，自动回退 DERP'
-    Login-Pen
-    if ($localHost) {
-        & $hostExecutable '+startup'
-        if ($LASTEXITCODE -ne 0) { throw '无法配置开机启动' }
-        & $hostExecutable restart
-        if ($LASTEXITCODE -ne 0) { throw '无法启动 PenDesk' }
-    }
-    Write-Output "主机：$hostaddress"
-    if ($localHost) { Write-Output "配置：$config" }
-    Write-Output '配对完成'
+function Clean {
+    Remove-Item -LiteralPath $build -Recurse -Force -ErrorAction Ignore
 }
 
-switch ($Action) {
-    build { Build }
-    configure { Configure }
-    install { Install-Package $package }
+switch ($action) {
+    clean { Clean }
+    default { Build }
 }

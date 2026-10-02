@@ -2,6 +2,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "cfg.h"
+#include "display.h"
 #include "input.h"
 #include "link.h"
 #include "preview.h"
@@ -54,7 +55,7 @@ int main(int argc, char **argv) {
     link_init(&link);
     while (alive) {
         struct mode mode;
-        if (input_display_mode(&mode) == 0 && link_open(&link, &cfg) == 0) {
+        if (display_mode(&mode) == 0 && link_open(&link, &cfg) == 0) {
             if (link_video_open(&video, &cfg) == 0 &&
                 link_handshake(&link, &cfg, mode, video.nonce) == 0) {
                 link_start(&link);

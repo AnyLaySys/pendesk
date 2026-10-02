@@ -6,15 +6,28 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdatomic.h>
+
+struct preview_frame {
+    uint8_t *data;
+    size_t capacity;
+    size_t length;
+    uint64_t timestamp;
+    bool keyframe;
+};
 
 struct files;
 struct preview {
     pthread_mutex_t mutex;
-    uint8_t *frame;
-    size_t capacity;
-    size_t length;
-    uint64_t sequence;
+    struct preview_frame queue[4];
+    unsigned int head;
+    unsigned int count;
+    bool connected;
+    bool waiting;
+    atomic_bool keyframe;
+    int wake;
     int listener;
+    int video_listener;
     struct files *files;
     pthread_t thread;
     bool thread_started;
@@ -24,6 +37,10 @@ int preview_open(struct preview *preview, const struct cfg *cfg);
 
 void preview_close(struct preview *preview);
 
-int preview_publish(struct preview *preview, const uint8_t *frame, size_t length);
+int
+preview_publish(struct preview *preview, const uint8_t *frame, size_t length, uint64_t timestamp,
+                bool keyframe);
+
+void preview_reset(struct preview *preview);
 
 #endif

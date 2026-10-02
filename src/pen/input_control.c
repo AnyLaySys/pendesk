@@ -36,18 +36,24 @@ int input_control_read(struct input_state *input) {
             if (type == 0x2a) {
                 if (offset + 2 > input->control_length) break;
                 if (input->control_buffer[offset + 1] > 10) return -1;
-                length = 2 + input->control_buffer[offset + 1] * 6;
+                length = 2 + input->control_buffer[offset + 1] * PAN_POINT_SIZE;
             } else {
-                length = type == 2 || type == 0x27 || type == 0x28 || type == 0x29 ? 2 :
-                         type == 0x20 ? 5 : type == 0x21 || type == 0x26 ? 3 :
-                         type == 0x23 ? 4 : 0;
+                length =
+                        type == 2 || type == 0x27 || type == 0x28 || type == 0x29 ? 2 : type == 0x20
+                                                                                        ? 5 :
+                                                                                        type ==
+                                                                                        0x21 ||
+                                                                                        type == 0x26
+                                                                                        ? 3 :
+                                                                                        type == 0x23
+                                                                                        ? 4 : 0;
                 if (!length) return -1;
             }
             if (offset + length > input->control_length) break;
             if (type == 2) {
                 bool paused = input->control_buffer[offset + 1] & STATE_VIDEO_PAUSED;
-                bool recording =
-                        atomic_load(&input->camera) || (input->control_buffer[offset + 1] & STATE_RECORDING);
+                bool recording = atomic_load(&input->camera) ||
+                                 (input->control_buffer[offset + 1] & STATE_RECORDING);
                 atomic_store(&input->paused, paused);
                 atomic_store(&input->recording, recording);
                 input->blocked = input->control_buffer[offset + 1] & STATE_BLOCKED;
@@ -58,12 +64,21 @@ int input_control_read(struct input_state *input) {
                     if (link_send(input->link, video, sizeof(video)) != 0) return -1;
                 }
             } else if (type == 0x28) {
-                bool recording = input->control_buffer[offset + 1] != 0 || atomic_load(&input->camera);
+                bool recording =
+                        input->control_buffer[offset + 1] != 0 || atomic_load(&input->camera);
                 atomic_store(&input->recording, recording);
             } else if (type == 0x29) {
                 bool camera = input->control_buffer[offset + 1] != 0;
                 atomic_store(&input->camera, camera);
                 atomic_store(&input->recording, camera);
+                if (link_send(input->link, input->control_buffer + offset, length) != 0) return -1;
+            } else if (type == 0x20 && input->mouse) {
+                uint8_t *move = input->control_buffer + offset;
+                if (input_send_move(input, (int16_t)((uint16_t) move[1] << 8 | move[2]),
+                                    (int16_t)((uint16_t) move[3] << 8 | move[4])) != 0)
+                    return -1;
+            } else if (type == 0x2a) {
+                input_pan_touch(input, input->control_buffer + offset);
                 if (link_send(input->link, input->control_buffer + offset, length) != 0) return -1;
             } else if ((input->mouse || (type != 0x20 && type != 0x21 && type != 0x26)) &&
                        link_send(input->link, input->control_buffer + offset, length) != 0)
@@ -71,7 +86,8 @@ int input_control_read(struct input_state *input) {
             offset += length;
         }
         if (offset) {
-            memmove(input->control_buffer, input->control_buffer + offset, input->control_length - offset);
+            memmove(input->control_buffer, input->control_buffer + offset,
+                    input->control_length - offset);
             input->control_length -= offset;
         }
     }

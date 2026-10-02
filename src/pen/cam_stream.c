@@ -2,6 +2,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "cam.h"
+#include "bytes.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <string.h>
@@ -12,18 +13,6 @@
 enum {
     CAMERA_HEADER = 25, CAMERA_PAYLOAD = 1150
 };
-
-static void write_u16(uint8_t *target, uint16_t value) {
-    target[0] = (uint8_t)(value >> 8);
-    target[1] = (uint8_t) value;
-}
-
-static void write_u32(uint8_t *target, uint32_t value) {
-    target[0] = (uint8_t)(value >> 24);
-    target[1] = (uint8_t)(value >> 16);
-    target[2] = (uint8_t)(value >> 8);
-    target[3] = (uint8_t) value;
-}
 
 static void
 send_frame(const struct camera *camera, const struct video *video, const struct cfg *cfg) {

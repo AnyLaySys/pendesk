@@ -9,8 +9,6 @@ int input_control_read(struct input_state *input);
 
 int input_devices_open(struct inputs *inputs);
 
-uint16_t input_virtual_key(unsigned int code);
-
 int input_send_key(struct input_state *input, uint16_t key, bool down);
 
 int input_keyboard_read(struct input_state *input, int fd);

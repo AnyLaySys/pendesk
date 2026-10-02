@@ -1,12 +1,21 @@
 #[derive(Clone)]
 pub struct Config {
-    pub fps: u32,
     pub quality: u32,
     pub port: u16,
     pub token: [u8; 32],
 }
+#[derive(Clone)]
+pub struct Setup {
+    pub authkey: Option<String>,
+    pub host: Option<String>,
+    pub port: u16,
+    pub serial: Option<String>,
+    pub token: Option<String>,
+}
 pub enum Command {
     Run { config: Option<Config>, wait: bool },
+    Install { serial: Option<String> },
+    Configure(Setup),
     Restart,
     Stop,
     Startup(bool),
@@ -25,6 +34,10 @@ pub fn parse() -> Result<Command, String> {
             config: None,
             wait: true,
         }),
+        "install" => parse_setup(arguments).map(|setup| Command::Install {
+            serial: setup.serial,
+        }),
+        "configure" => parse_setup(arguments).map(Command::Configure),
         "restart" if arguments.next().is_none() => Ok(Command::Restart),
         "stop" if arguments.next().is_none() => Ok(Command::Stop),
         "+startup" if arguments.next().is_none() => Ok(Command::Startup(true)),
@@ -39,7 +52,6 @@ pub fn parse() -> Result<Command, String> {
 pub fn stored(text: &str) -> Result<Config, String> {
     let mut port = None;
     let mut pairing_token = None;
-    let mut fps = 18;
     let mut quality = 45;
     for line in text.lines() {
         let Some((key, value)) = line.split_once('=') else {
@@ -48,45 +60,38 @@ pub fn stored(text: &str) -> Result<Config, String> {
         match key.trim() {
             "port" => port = Some(number(value.trim(), "port")?),
             "token" => pairing_token = Some(token(value.trim())?),
-            "fps" => fps = number(value.trim(), "fps")?,
             "quality" => quality = number(value.trim(), "quality")?,
             _ => {}
         }
     }
-    let port = port.ok_or_else(|| "active-config has no port".to_string())?;
+    let port = port.ok_or_else(|| "DevCfg has no port".to_string())?;
     if port == 0 {
-        return Err("active-config has an invalid port".into());
-    }
-    if !(1..=60).contains(&fps) {
-        return Err("active-config fps must be from 1 to 60".into());
+        return Err("DevCfg has an invalid port".into());
     }
     if !(1..=100).contains(&quality) {
-        return Err("active-config quality must be from 1 to 100".into());
+        return Err("DevCfg quality must be from 1 to 100".into());
     }
     Ok(Config {
-        fps,
         quality,
         port,
-        token: pairing_token.ok_or_else(|| "active-config has no token".to_string())?,
+        token: pairing_token.ok_or_else(|| "DevCfg has no token".to_string())?,
     })
 }
 fn parse_config(mut arguments: impl Iterator<Item = String>) -> Result<Config, String> {
-    let mut fps = 18;
     let mut quality = 45;
     let mut port = 999;
     let mut pairing_token = None;
     while let Some(option) = arguments.next() {
         match option.as_str() {
-            "--fps" => fps = number(&next(&mut arguments, "--fps")?, "--fps")?,
+            "--fps" => {
+                if next(&mut arguments, "--fps")? != "60" { return Err("frame rate is fixed at 60 FPS".into()); }
+            }
             "--quality" => quality = number(&next(&mut arguments, "--quality")?, "--quality")?,
             "--port" => port = number(&next(&mut arguments, "--port")?, "--port")?,
             "--token" => pairing_token = Some(token(&next(&mut arguments, "--token")?)?),
             "--help" | "-h" => return Err(usage()),
             _ => return Err(usage()),
         }
-    }
-    if !(1..=60).contains(&fps) {
-        return Err("--fps must be from 1 to 60".into());
     }
     if port == 0 {
         return Err("--port must be from 1 to 65535".into());
@@ -95,11 +100,38 @@ fn parse_config(mut arguments: impl Iterator<Item = String>) -> Result<Config, S
         return Err("--quality must be from 1 to 100".into());
     }
     Ok(Config {
-        fps,
         quality,
         port,
         token: pairing_token.ok_or_else(|| "--token is required".to_string())?,
     })
+}
+fn parse_setup(mut arguments: impl Iterator<Item = String>) -> Result<Setup, String> {
+    let mut setup = Setup {
+        authkey: None,
+        host: None,
+        port: 999,
+        serial: None,
+        token: None,
+    };
+    while let Some(option) = arguments.next() {
+        let mut value = || next(&mut arguments, &option);
+        match option.as_str() {
+            "--auth-key" | "--authkey" => setup.authkey = Some(value()?),
+            "--host" | "--hostaddress" => setup.host = Some(value()?),
+            "--port" => setup.port = number(&value()?, "--port")?,
+            "--serial" => setup.serial = Some(value()?),
+            "--token" => setup.token = Some(value()?),
+            "--help" | "-h" => return Err(usage()),
+            _ => return Err(usage()),
+        }
+    }
+    if setup.port == 0 {
+        return Err("--port must be from 1 to 65535".into());
+    }
+    if let Some(token) = &setup.token {
+        token_value(token)?;
+    }
+    Ok(setup)
 }
 fn next(arguments: &mut impl Iterator<Item = String>, option: &str) -> Result<String, String> {
     arguments
@@ -112,9 +144,7 @@ fn number<T: std::str::FromStr>(value: &str, option: &str) -> Result<T, String> 
         .map_err(|_| format!("{option} has an invalid value"))
 }
 fn token(value: &str) -> Result<[u8; 32], String> {
-    if value.len() != 64 {
-        return Err("--token must be 64 hexadecimal characters".into());
-    }
+    token_value(value)?;
     let mut output = [0; 32];
     for (index, pair) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         output[index] = nibble(pair[0])
@@ -123,6 +153,15 @@ fn token(value: &str) -> Result<[u8; 32], String> {
             .ok_or_else(|| "--token must be hexadecimal".to_string())?;
     }
     Ok(output)
+}
+pub fn valid_token(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|value| value.is_ascii_hexdigit())
+}
+fn token_value(value: &str) -> Result<(), String> {
+    if !valid_token(value) {
+        return Err("--token must be 64 hexadecimal characters".into());
+    }
+    Ok(())
 }
 fn nibble(value: u8) -> Option<u8> {
     match value {
@@ -133,5 +172,5 @@ fn nibble(value: u8) -> Option<u8> {
     }
 }
 pub fn usage() -> String {
-    "Usage: pendesk [--token <64-hex> [--port <1-65535>] [--fps <1-60>] [--quality <1-100>]]\n       pendesk restart|stop|+startup|-startup".into()
+    "Usage: pendesk [--token <64-hex> [--port <1-65535>] [--quality <1-100>]]\n       pendesk install [--serial <device>]\n       pendesk configure [--host <Tailnet IPv4>] [--serial <device>] [--token <64-hex>] [--auth-key <key>]\n       pendesk restart|stop|+startup|-startup".into()
 }

@@ -1,4 +1,4 @@
-use crate::all::args::Config;
+use crate::all::cmd::Config;
 use std::io::{self, Read};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::sync::Arc;

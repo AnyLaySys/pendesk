@@ -2,7 +2,7 @@ import global from "global"
 import fs from "fs"
 const native = new global.Global()
 const APPID = "__APPID__"
-const RUN = 'latest=; for app in /userdisk/*/data/mini_app/pkg/' + APPID + "/*/bin/run /userdisk/*/*/data/mini_app/pkg/" + APPID + "/*/bin/run /userdata/*/data/mini_app/pkg/" + APPID + "/*/bin/run /userdata/*/*/data/mini_app/pkg/" + APPID + '/*/bin/run; do [ -f "$app" ] || continue; if [ -z "$latest" ] || [ "$app" -nt "$latest" ]; then latest=$app; fi; done; [ -n "$latest" ] && exec /bin/sh "$latest" "$@"; exit 1'
+const RUN = "latest=; for app in /userdisk/*/data/mini_app/pkg/" + APPID + "/*/bin/run /userdisk/*/*/data/mini_app/pkg/" + APPID + "/*/bin/run /userdata/*/data/mini_app/pkg/" + APPID + "/*/bin/run /userdata/*/*/data/mini_app/pkg/" + APPID + '/*/bin/run; do [ -f "$app" ] || continue; if [ -z "$latest" ] || [ "$app" -nt "$latest" ]; then latest=$app; fi; done; [ -n "$latest" ] && exec /bin/sh "$latest" "$@"; exit 1'
 const quote = (value) => "'" + value.replace(/'/g, "'\\''") + "'"
 const command = "/bin/setsid /bin/sh -lc " + quote(RUN)
 const STATE_BLOCKED = 1
@@ -10,7 +10,7 @@ const STATE_VIDEO_PAUSED = 2
 const STATE_MOUSE_PAUSED = 4
 const STATE_RECORDING = 8
 const FONT = "Google Sans Flex"
-const icons = { screen: "view.png", mouse: "mouse.png", touch: "touch.png", keyboard: "kb.png", mic: "mic.png", camera: "cam.png", folder: "folder.png", file: "file.png", back: "back.png", stop: "stop.png", sound: "sound.png", power: "power.png" }
+const icons = { screen: "view.png", mouse: "mouse.png", touch: "touch.png", keyboard: "kb.png", mic: "mic.png", camera: "cam.png", folder: "folder.png", file: "file.png", back: "back.png", refresh: "rf.png", exit: "exit.png", sound: "sound.png", power: "power.png" }
 
 function control(bytes, ordered = false) {
    const packet = bytes.map((value) => "\\" + ("00" + (value & 255).toString(8)).slice(-3)).join("")
@@ -54,81 +54,88 @@ const row = (...entries) => {
 const keyRows = [row("Esc", "F1", "F2", "F3", "F4", "F5", "F6", close(), "F7", "F8", "F9", "F10", "F11", "F12", "Del"), row("`", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=", key("Back", 2)), row(key("Tab", 1.5), "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "[", "]", key("\\", 1.5)), row(key("Caps", 1.75), "A", "S", "D", "F", "G", "H", "J", "K", "L", ";", "'", key("Enter", 2.25)), row(key("Shift", 2.25), "Z", "X", "C", "V", "B", "N", "M", ",", ".", "/", gap(0.75), "Up", gap()), row(key("Ctrl", 1.25), key("Win", 1.25), key("Alt", 1.25), key(" ", 6.25), key("End", 2), "Left", "Down", "Right")]
 const modifierCodes = { Shift: 16, Ctrl: 17, Win: 91, Alt: 18 }
 
+const deviceAddress = /^100\.(?:\d{1,3}\.){2}\d{1,3}$/
+const parseDevices = (value) =>
+   String(value)
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => ({ device: line.replace(/^\*/, ""), active: line[0] === "*" }))
+      .filter((entry) => deviceAddress.test(entry.device))
+
 const script = {
    data() {
+      const data = { active: true, job: null, pad: null, held: [], directTouches: {}, touchTimer: null, fileTouch: null, fileScrolled: false, fileTransferPolling: false, fileTransferStarted: false, fileTransferSide: "", fileTransferTimer: null, devices: [], audioOn: false, screenOn: false, mouseOn: false, touchOn: false, micOn: false, cameraOn: false, view: "devices", fileState: { pen: [], windows: [] }, fileOffset: { pen: 0, windows: 0 }, fileRead: 0, caps: false, modifiers: { Shift: false, Ctrl: false, Win: false, Alt: false } }
+      fs.readFile("/userdisk/PenDesk/CtrlDev", "utf8")
+         .then((value) => {
+            data.devices = parseDevices(value)
+         })
+         .catch(() => {})
       try {
-         launch()
-         state(false, true, true, false)
+         state(true, true, true, false)
       } catch {}
-      return { active: true, ready: false, frame: Date.now(), job: null, guard: null, view: "desktop", pad: null, held: [], directTouches: {}, touchTimer: null, fileTouch: null, fileScrolled: false, fileTransferPolling: false, fileTransferStarted: false, fileTransferSide: "", fileTransferTimer: null, audioOn: false, screenOn: false, mouseOn: false, touchOn: false, micOn: false, cameraOn: false, fileState: { pen: [], windows: [] }, fileOffset: { pen: 0, windows: 0 }, fileRead: 0, caps: false, modifiers: { Shift: false, Ctrl: false, Win: false, Alt: false } }
+      return data
    },
    activated() {
       const resumed = !this.active
       this.active = true
-      if (!resumed) return this.requestFrame()
+      if (!resumed) {
+         if (this.view === "devices") this.refreshDevices()
+         return this.startVideo()
+      }
+      if (this.view === "devices") {
+         state(true, true, true, this.micOn)
+         this.refreshDevices()
+         return
+      }
       launch()
-      this.view = "desktop"
-      state(false, !this.screenOn, !this.mouseOn, this.micOn)
-      this.requestFrame()
+      state(this.view !== "desktop", !this.screenOn || this.view === "tools", !this.mouseOn, this.micOn)
+      this.startVideo()
    },
    beforeDestroy() {
-      this.stop()
+      this.exitDevice(false)
    },
    methods: {
-      schedule(failed) {
-         if (this.guard !== null) {
-            clearTimeout(this.guard)
-            this.guard = null
-         }
-         if (!this.active || !this.screenOn || (this.view !== "desktop" && this.view !== "keyboard") || this.job !== null) return
-         if (failed) {
-            this.ready = false
-            state(this.view === "keyboard", false, !this.mouseOn, this.micOn)
-         } else if (!this.ready) {
-            state(this.view === "keyboard", false, !this.mouseOn, this.micOn)
-            this.ready = true
-         }
-         this.job = setTimeout(
-            () => {
-               this.job = null
-               this.requestFrame()
-            },
-            failed ? 500 : 0
-         )
-      },
-      requestFrame() {
+      startVideo() {
          if (!this.active || !this.screenOn || (this.view !== "desktop" && this.view !== "keyboard")) return
-         this.frame++
-      },
-      poke() {
-         if (!this.active || (this.view !== "desktop" && this.view !== "keyboard")) return
-         if (this.guard !== null) clearTimeout(this.guard)
-         this.guard = setTimeout(() => {
-            this.guard = null
-            this.schedule(true)
-         }, 1500)
-      },
-      cancelFrame() {
          if (this.job !== null) clearTimeout(this.job)
-         if (this.guard !== null) clearTimeout(this.guard)
-         this.job = null
-         this.guard = null
+         this.job = setTimeout(() => {
+            this.job = null
+            if (!this.active || !this.screenOn) return
+            const video = this.$refs.remote
+            if (video) video.play(0)
+         }, 100)
       },
-      stop() {
-         const running = this.active
+      stopVideo() {
+         if (this.job !== null) clearTimeout(this.job)
+         this.job = null
+         const video = this.$refs.remote
+         if (video) video.stop()
+      },
+      videoError() {
+         if (!this.active || !this.screenOn || (this.view !== "desktop" && this.view !== "keyboard")) return
+         this.stopVideo()
+         this.job = setTimeout(() => {
+            this.job = null
+            this.startVideo()
+         }, 500)
+      },
+      exitDevice(refresh) {
          if (this.fileTransferTimer !== null) clearTimeout(this.fileTransferTimer)
          this.fileTransferTimer = null
          this.fileTransferPolling = false
-         if (running) {
-            this.active = false
-            this.ready = false
-            this.audioOn = this.micOn = this.cameraOn = false
-            this.cancelFrame()
-            this.touchRelease()
-            this.finishPad(false)
-            this.releaseKeys()
-         }
+         this.active = false
+         this.audioOn = this.micOn = this.cameraOn = false
+         this.stopVideo()
+         this.touchRelease()
+         this.finishPad(false)
+         this.releaseKeys()
          native.execShell("/bin/sh -lc " + quote(RUN) + " -- stop >/dev/null 2>&1 &")
+         if (refresh) {
+            this.active = true
+            this.view = "devices"
+            state(true, true, true, false)
+            this.refreshDevices()
+         }
       },
       toggleAudio() {
          if (this.micOn) return
@@ -157,6 +164,9 @@ const script = {
       },
       toggleScreen() {
          this.screenOn = !this.screenOn
+         state(this.view !== "desktop", !this.screenOn || this.view === "tools", !this.mouseOn, this.micOn)
+         if (this.screenOn) this.startVideo()
+         else this.stopVideo()
       },
       toggleMouse() {
          this.touchRelease()
@@ -187,14 +197,37 @@ const script = {
          this.touchRelease()
          this.finishPad(false)
          this.releaseKeys()
-         this.cancelFrame()
+         this.stopVideo()
          this.view = "tools"
          state(true, true, true, this.micOn)
       },
       showKeyboard() {
          this.view = "keyboard"
-         if (this.screenOn) this.frame++
+         if (this.screenOn) this.startVideo()
          state(true, !this.screenOn, !this.mouseOn, this.micOn)
+      },
+      refreshDevices() {
+         return fs.readFile("/userdisk/PenDesk/CtrlDev", "utf8").then(
+            (value) => {
+               this.devices = parseDevices(value)
+            },
+            () => {
+               this.devices = []
+            }
+         )
+      },
+      selectDevice(device) {
+         if (!deviceAddress.test(device)) return
+         this.active = true
+         this.screenOn = this.mouseOn = this.touchOn = this.audioOn = this.micOn = this.cameraOn = false
+         control([0x27, 0])
+         control([0x28, 0], true)
+         control([0x29, 0], true)
+         state(true, true, true, false)
+         native.execShell("/bin/sh -lc " + quote(RUN) + " -- switch-device " + device + " < /dev/null > /dev/null 2>&1 &")
+         this.view = "desktop"
+         state(false, !this.screenOn, !this.mouseOn, this.micOn)
+         this.startVideo()
       },
       showFiles() {
          this.view = "files"
@@ -209,7 +242,7 @@ const script = {
          this.releaseKeys()
          this.view = "desktop"
          state(false, !this.screenOn, !this.mouseOn, this.micOn)
-         this.requestFrame()
+         this.startVideo()
       },
       fileAction(action) {
          if (this.fileTransferPolling) return
@@ -247,15 +280,18 @@ const script = {
       },
       loadFiles() {
          const read = ++this.fileRead
-         return fs.readFile("/tmp/pendesk-files.json", "utf8").then((text) => {
-            if (read !== this.fileRead) return
-            const fileState = JSON.parse(typeof text === "string" ? text : String(text))
-            if (Array.isArray(fileState.pen) && Array.isArray(fileState.windows)) {
-               this.fileState = fileState
-               this.fileScroll("pen", this.fileOffset.pen)
-               this.fileScroll("windows", this.fileOffset.windows)
-            }
-         }).catch(() => {})
+         return fs
+            .readFile("/tmp/pendesk-files.json", "utf8")
+            .then((text) => {
+               if (read !== this.fileRead) return
+               const fileState = JSON.parse(typeof text === "string" ? text : String(text))
+               if (Array.isArray(fileState.pen) && Array.isArray(fileState.windows)) {
+                  this.fileState = fileState
+                  this.fileScroll("pen", this.fileOffset.pen)
+                  this.fileScroll("windows", this.fileOffset.windows)
+               }
+            })
+            .catch(() => {})
       },
       fileY(event) {
          const touch = event && ((event.changedTouches && event.changedTouches[0]) || (event.touches && event.touches[0]) || event)
@@ -271,23 +307,24 @@ const script = {
       fileTouchMove(side, event) {
          const touch = this.fileTouch
          if (!touch || touch.side !== side) return
-         const distance = touch.y - this.fileY(event)
-         if (Math.abs(distance) < 9) return
-         this.fileScrolled = true
-         this.fileScroll(side, touch.offset + Math.round(distance / 27))
+         this.fileDrag(touch, side, event)
       },
       fileTouchEnd(side, event) {
          const touch = this.fileTouch
          this.fileTouch = null
          if (!touch || touch.side !== side) return
-         const distance = touch.y - this.fileY(event)
-         if (Math.abs(distance) >= 9) {
-            this.fileScrolled = true
-            this.fileScroll(side, touch.offset + Math.round(distance / 27))
+         if (this.fileDrag(touch, side, event)) {
             setTimeout(() => {
                this.fileScrolled = false
             }, 90)
          }
+      },
+      fileDrag(touch, side, event) {
+         const distance = touch.y - this.fileY(event)
+         if (Math.abs(distance) < 9) return false
+         this.fileScrolled = true
+         this.fileScroll(side, touch.offset + Math.round(distance / 27))
+         return true
       },
       padTouches(event) {
          const active = event && event.touches
@@ -443,7 +480,6 @@ const script = {
          pad.x = point.x
          pad.y = point.y
          if (!dx && !dy) return
-         this.poke()
          const wasMoved = pad.moved
          const travel = touchDistance(point.x - pad.originX, point.y - pad.originY)
          if (!pad.moved && (touches.length > 1 ? travel >= gestureThreshold : travel > 3)) {
@@ -472,7 +508,6 @@ const script = {
          if (pad.dragging) packet.push(...button(1, false))
          else if (click && !pad.moved && Date.now() - pad.started < 300) packet.push(...button(pad.max > 1 ? 2 : 1, true), ...button(pad.max > 1 ? 2 : 1, false))
          if (packet.length) {
-            this.poke()
             control(packet, pad.dragging || (click && !pad.moved))
          }
       },
@@ -504,7 +539,6 @@ const script = {
          packet.push(0x23, 0, code, 1, 0x23, 0, code, 0)
          if (shift) packet.push(0x23, 0, 16, 0)
          control(packet)
-         this.poke()
       },
       keyStart(entry, event) {
          this.keyPoints(event).forEach((point) => {
@@ -560,9 +594,13 @@ const style = {
       toolPower: { marginRight: 0 },
       toolText: { position: "relative", width: 36, height: 27, color: "#e6e1e5", fontSize: 18, lineHeight: "27px", textAlign: "center" },
       toolBack: { position: "absolute", top: 9, left: 9, width: 27, height: 27, alignItems: "center", justifyContent: "center", backgroundColor: "#1D1E21", borderRadius: 9 },
-      toolStop: { position: "absolute", bottom: 9, left: 9, width: 27, height: 27, alignItems: "center", justifyContent: "center", backgroundColor: "#1D1E21", borderRadius: 9 },
+      toolExit: { position: "absolute", bottom: 9, left: 9, width: 27, height: 27, alignItems: "center", justifyContent: "center", backgroundColor: "#1D1E21", borderRadius: 9 },
       toolBackIcon: { width: 27, height: 27 },
       toolItemIcon: { width: 27, height: 27, marginRight: 3 },
+      devices: { width: "100%", height: "100%", position: "relative" },
+      deviceEntry: { position: "absolute", left: 45, right: 9, height: 27, paddingLeft: 9, alignItems: "center" },
+      deviceEntryActive: { backgroundColor: "#3474F0" },
+      deviceEntryText: { color: "#e6e1e5", fontSize: 18, lineHeight: "27px" },
       keyboard: { position: "absolute", bottom: 0, left: 0, width: "100%", height: "100%" },
       keyArea: { position: "absolute", top: 0, left: "13.5%", width: "73%", height: "100%", flexDirection: "column" },
       touchPad: { position: "absolute", top: 0, width: "13.5%", height: "100%", backgroundColor: "transparent" },
@@ -597,7 +635,7 @@ const style = {
       fileProgressFailed: { backgroundColor: "#d13438" },
       fileTransfer: { position: "absolute", bottom: 0, left: 0, width: "100%", height: 27, alignItems: "center", justifyContent: "center" },
       fileTransferReady: { backgroundColor: "#3474F0" },
-      fileTransferText: { color: "#e6e1e5", fontSize: 18, lineHeight: "27px", textAlign: "center" },
+      fileTransferText: { color: "#e6e1e5", fontSize: 18, lineHeight: "27px", textAlign: "center" }
    }
 }
 
@@ -605,7 +643,7 @@ const render = function () {
    const create = this.$createElement
    const text = (value, classes, style) => create("text", { staticClass: ["font"].concat(classes), style, attrs: { value } })
    const touchEvents = { touchstart: (event) => this.touchFrame(event, false), touchmove: (event) => this.touchFrame(event, false), touchend: (event) => this.touchFrame(event, true), touchcancel: (event) => this.touchFrame(event, false) }
-   const remoteFrame = (classes) => (this.screenOn ? create("image", { staticClass: classes, attrs: { src: "http://127.0.0.1:999/frame?" + this.frame }, on: { load: (event) => this.schedule(!!event && event.success === false), error: () => this.schedule(true) } }) : create("div", { staticClass: classes }))
+   const remoteFrame = (classes) => (this.screenOn ? create("video", { staticClass: classes, ref: "remote", attrs: { src: "http://127.0.0.1:999/native", enable_audio: false, playbin3: true }, on: { error: () => this.videoError(), completed: () => this.videoError() } }) : create("div", { staticClass: classes }))
    const touchSurface = () => (this.touchOn ? create("div", { staticClass: ["touchSurface"], on: touchEvents }) : null)
    const icon = (value, classes) => create("div", { staticClass: classes, style: { backgroundImage: "url(" + value + ")", backgroundSize: "contain", backgroundRepeat: "no-repeat", backgroundPosition: "center" } })
    const keyButton = (entry) => {
@@ -615,7 +653,8 @@ const render = function () {
       return create("div", { staticClass: ["button"], style: { left: (entry.column / keyboardWidth) * 100 + "%", width: (entry.span / keyboardWidth) * 100 + "%" }, on: { touchstart: (event) => this.keyStart(entry, event), touchend: (event) => this.keyEnd(event), touchcancel: () => this.releaseKeys() } }, shown ? [text(shown, ["label"].concat(selected ? ["selectedLabel"] : []))] : [])
    }
    const toolBack = (action) => create("div", { staticClass: ["toolBack"], on: { click: action } }, [icon(icons.back, ["toolBackIcon"])])
-   const toolStop = (action) => create("div", { staticClass: ["toolStop"], on: { click: action } }, [icon(icons.stop, ["toolBackIcon"])])
+   const toolRefresh = (action) => create("div", { staticClass: ["toolBack"], on: { click: action } }, [icon(icons.refresh, ["toolBackIcon"])])
+   const toolExit = (action) => create("div", { staticClass: ["toolExit"], on: { click: action } }, [icon(icons.exit, ["toolBackIcon"])])
    const date = (value) => {
       if (!value) return ""
       const timestamp = new Date(value * 1000)
@@ -637,7 +676,7 @@ const render = function () {
    if (this.view === "tools") {
       return create("div", { key: "tools", staticClass: ["tools"] }, [
          toolBack(() => this.showDesktop()),
-         toolStop(() => this.stop()),
+         toolExit(() => this.exitDevice(true)),
          create("div", { staticClass: ["toolRail"] }, [
             create("div", { staticClass: ["toolItem", "toolScreen"].concat(this.screenOn ? ["toolItemSelected"] : []), on: { click: () => this.toggleScreen() } }, [icon(icons.screen, ["toolItemIcon"]), text("显示", ["toolText"])]),
             create("div", { staticClass: ["toolItem", "toolMouse"].concat(this.mouseOn || this.touchOn ? ["toolItemSelected"] : []), on: { click: () => this.toggleMouse() } }, [icon(this.touchOn ? icons.touch : icons.mouse, ["toolItemIcon"]), text(this.touchOn ? "\u89e6\u63a7" : "\u9f20\u6807", ["toolText"])]),
@@ -649,6 +688,10 @@ const render = function () {
             create("div", { staticClass: ["toolItem", "toolPower"], on: { click: () => this.wakeComputer() } }, [icon(icons.power, ["toolItemIcon"]), text("\u7535\u6e90", ["toolText"])])
          ])
       ])
+   }
+   if (this.view === "devices") {
+      const entries = this.devices.map((entry, index) => create("div", { key: entry.device, staticClass: ["deviceEntry"].concat(entry.active ? ["deviceEntryActive"] : []), style: { top: 9 + index * 27 }, on: { click: () => this.selectDevice(entry.device) } }, [text(entry.device, ["deviceEntryText"])]))
+      return create("div", { key: "devices", staticClass: ["devices"] }, [toolRefresh(() => this.refreshDevices())].concat(entries))
    }
    if (this.view === "keyboard") {
       return create("div", { key: "keyboard", staticClass: ["root"] }, [
@@ -685,7 +728,7 @@ const render = function () {
       const total = batch.reduce((sum, entry) => sum + entry.total, 0)
       const done = batch.reduce((sum, entry) => sum + entry.done, 0)
       const completed = batch.filter((entry) => entry.state === 2 || entry.state === 3).length
-      const progress = total ? Math.min(100, Math.floor(done * 100 / total)) : batch.length ? Math.floor(completed * 100 / batch.length) : 0
+      const progress = total ? Math.min(100, Math.floor((done * 100) / total)) : batch.length ? Math.floor((completed * 100) / batch.length) : 0
       const contents = []
       if (running) contents.push(create("div", { staticClass: ["fileProgressTrack"] }, [create("div", { staticClass: ["fileProgress"], style: { width: progress + "%" } })]))
       contents.push(text(running ? label + " " + progress + "%" : label, ["fileTransferText"]))
@@ -702,7 +745,7 @@ const render = function () {
          transfer(side, action, label)
       ])
    }
-   return create("div", { key: "files", staticClass: ["files"] }, [toolBack(() => this.showTools()), toolStop(() => this.stop()), create("div", { staticClass: ["filePanel"] }, [create("div", { staticClass: ["fileRail"] }, [create("div", { staticClass: ["fileTitle"] }, [text("\u672c\u5730", ["fileTitleText"])]), create("div", { staticClass: ["fileTitle"] }, [text("\u8fdc\u7aef", ["fileTitleText"])])]), create("div", { staticClass: ["filePanels"] }, [list("pen", this.fileState.pen, "transfer/push", "\u4f20\u8fdc\u7aef"), list("windows", this.fileState.windows, "transfer/pull", "\u4f20\u672c\u5730")])])])
+   return create("div", { key: "files", staticClass: ["files"] }, [toolBack(() => this.showTools()), toolExit(() => this.exitDevice(true)), create("div", { staticClass: ["filePanel"] }, [create("div", { staticClass: ["fileRail"] }, [create("div", { staticClass: ["fileTitle"] }, [text("\u672c\u5730", ["fileTitleText"])]), create("div", { staticClass: ["fileTitle"] }, [text("\u8fdc\u7aef", ["fileTitleText"])])]), create("div", { staticClass: ["filePanels"] }, [list("pen", this.fileState.pen, "transfer/push", "\u4f20\u8fdc\u7aef"), list("windows", this.fileState.windows, "transfer/pull", "\u4f20\u672c\u5730")])])])
 }
 
 script.render = render

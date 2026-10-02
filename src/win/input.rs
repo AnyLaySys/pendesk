@@ -57,7 +57,10 @@ pub fn touch(contacts: &[TouchContact]) -> Result<(), String> {
     let pointers = contacts
         .iter()
         .map(|contact| {
-            let point = POINT { x: contact.x, y: contact.y };
+            let point = POINT {
+                x: contact.x,
+                y: contact.y,
+            };
             let mut flags = match contact.phase {
                 1 => {
                     POINTER_FLAG_DOWN

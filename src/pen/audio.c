@@ -2,6 +2,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "audio.h"
+#include "bytes.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -19,7 +20,6 @@ void audio_init(struct audio *audio) {
 }
 
 int audio_start(struct audio *audio) {
-    char port_text[6];
     char port_arg[12];
     int reservation;
     int socket_fd;
@@ -30,9 +30,9 @@ int audio_start(struct audio *audio) {
     char *arguments[] = {"gst-launch-1.0", "-q", "udpsrc", "address=127.0.0.1", port_arg,
                          "caps=application/x-rtp,media=(string)audio,encoding-name=(string)OPUS,clock-rate=(int)48000,encoding-params=(string)2,payload=(int)111",
                          "!", "rtpjitterbuffer", "latency=20", "drop-on-latency=true", "!",
-                         "rtpopusdepay", "!", "opusdec", "!", "audioconvert", "!",
-                         "audioresample", "!", "audio/x-raw,format=S16LE,rate=48000,channels=2",
-                         "!", "alsasink", "device=default", NULL};
+                         "rtpopusdepay", "!", "opusdec", "!", "audioconvert", "!", "audioresample",
+                         "!", "audio/x-raw,format=S16LE,rate=48000,channels=2", "!", "alsasink",
+                         "device=default", NULL};
     if (audio->process > 0) {
         pid_t result = waitpid(audio->process, NULL, WNOHANG);
         if (result == 0 || (result < 0 && errno == EINTR)) return -1;
@@ -48,8 +48,7 @@ int audio_start(struct audio *audio) {
         return -1;
     }
     close(reservation);
-    snprintf(port_text, sizeof(port_text), "%u", ntohs(address.sin_port));
-    snprintf(port_arg, sizeof(port_arg), "port=%s", port_text);
+    snprintf(port_arg, sizeof(port_arg), "port=%u", ntohs(address.sin_port));
     socket_fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
     if (socket_fd < 0) return -1;
     process = fork();
@@ -84,16 +83,12 @@ void audio_play(struct audio *audio, uint32_t sequence, const uint8_t *frame, si
     }
     packet[0] = 0x80;
     packet[1] = 111;
-    packet[2] = (uint8_t) (sequence >> 8);
-    packet[3] = (uint8_t) sequence;
-    packet[4] = (uint8_t) (timestamp >> 24);
-    packet[5] = (uint8_t) (timestamp >> 16);
-    packet[6] = (uint8_t) (timestamp >> 8);
-    packet[7] = (uint8_t) timestamp;
+    write_u16(packet + 2, (uint16_t) sequence);
+    write_u32(packet + 4, timestamp);
     memcpy(packet + 8, "PDSK", 4);
     memcpy(packet + 12, frame, length);
-    sendto(audio->socket, packet, 12 + length, MSG_DONTWAIT,
-           (struct sockaddr *) &audio->address, sizeof(audio->address));
+    sendto(audio->socket, packet, 12 + length, MSG_DONTWAIT, (struct sockaddr *) &audio->address,
+           sizeof(audio->address));
 }
 
 void audio_stop(struct audio *audio) {

@@ -1,11 +1,7 @@
-use crate::all::args::{self, Config};
+use crate::all::cmd::{self as cmd, Config};
 pub fn stored() -> Result<Config, String> {
-    let path = std::env::var_os("LOCALAPPDATA")
-        .map(std::path::PathBuf::from)
-        .ok_or_else(|| "LOCALAPPDATA is not set".to_string())?
-        .join("PenDesk")
-        .join("active-config");
+    let path = std::env::current_exe().unwrap().parent().unwrap().join("cfg/DevCfg");
     let text =
         std::fs::read_to_string(&path).map_err(|_| format!("could not read {}", path.display()))?;
-    args::stored(&text)
+    cmd::stored(&text)
 }

@@ -2,6 +2,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "cam.h"
+#include "record.h"
 #include <arpa/inet.h>
 #include <dirent.h>
 #include <errno.h>
@@ -13,9 +14,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/prctl.h>
-#include <sys/stat.h>
 #include <sys/wait.h>
-#include <time.h>
 #include <unistd.h>
 
 static int ioctl_retry(int fd, unsigned long request, void *argument) {
@@ -77,18 +76,13 @@ static int find_camera(char *path, size_t path_size) {
         }
         uint32_t caps = capability.capabilities & V4L2_CAP_DEVICE_CAPS ? capability.device_caps
                                                                        : capability.capabilities;
-        if (caps & V4L2_CAP_VIDEO_CAPTURE_MPLANE)
-            capture_type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-        else if (caps & V4L2_CAP_VIDEO_CAPTURE)
-            capture_type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        else {
+        if (!(caps & (V4L2_CAP_VIDEO_CAPTURE_MPLANE | V4L2_CAP_VIDEO_CAPTURE)) ||
+            !(caps & V4L2_CAP_STREAMING)) {
             close(fd);
             continue;
         }
-        if (!(caps & V4L2_CAP_STREAMING)) {
-            close(fd);
-            continue;
-        }
+        capture_type = caps & V4L2_CAP_VIDEO_CAPTURE_MPLANE ? V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE
+                                                            : V4L2_BUF_TYPE_VIDEO_CAPTURE;
         bool nv12 = false;
         for (uint32_t format_index = 0;; ++format_index) {
             struct v4l2_fmtdesc format = {.index = format_index, .type = capture_type};
@@ -115,37 +109,6 @@ static int find_camera(char *path, size_t path_size) {
     return best_pixels ? 0 : -1;
 }
 
-static int recording_file(char *path, size_t size) {
-    struct timespec now;
-    struct tm local;
-    char timestamp[16];
-    time_t seconds;
-    int milliseconds;
-    if ((mkdir("/userdisk/PenDesk", 0700) != 0 && errno != EEXIST) ||
-        (mkdir("/userdisk/PenDesk/Video", 0700) != 0 && errno != EEXIST) ||
-        clock_gettime(CLOCK_REALTIME, &now) != 0)
-        return -1;
-    seconds = now.tv_sec;
-    milliseconds = now.tv_nsec / 1000000;
-    for (;;) {
-        if (!localtime_r(&seconds, &local) ||
-            !strftime(timestamp, sizeof(timestamp), "%Y%m%d_%H%M%S", &local) ||
-            snprintf(path, size, "/userdisk/PenDesk/Video/%s_%03d.avi", timestamp, milliseconds) >=
-            (int) size)
-            return -1;
-        int fd = open(path, O_CREAT | O_EXCL | O_WRONLY, 0600);
-        if (fd >= 0) {
-            close(fd);
-            return 0;
-        }
-        if (errno != EEXIST) return -1;
-        if (++milliseconds == 1000) {
-            milliseconds = 0;
-            ++seconds;
-        }
-    }
-}
-
 void cam_init(struct camera *camera) {
     *camera = (struct camera) {.fd = -1};
 }
@@ -160,7 +123,7 @@ int cam_start(struct camera *camera, const struct cfg *cfg) {
     pid_t parent = getpid();
     if (camera->process > 0 || find_camera(device, sizeof(device)) != 0) return -1;
     if (inet_pton(AF_INET, cfg->host, host) != 1 ||
-        recording_file(camera->path, sizeof(camera->path)) != 0)
+        recording_file("Video", "avi", camera->path, sizeof(camera->path)) != 0)
         return -1;
     snprintf(device_arg, sizeof(device_arg), "device=%s", device);
     snprintf(file_arg, sizeof(file_arg), "location=%s", camera->path);

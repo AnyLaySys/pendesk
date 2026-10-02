@@ -96,9 +96,8 @@ int files_remote_list(struct files *files, struct file_panel *panel) {
         struct file_entry item = {0};
         if (files_read_all(fd, &kind, 1) != 0 ||
             files_read_text(fd, item.name, sizeof(item.name)) != 0 ||
-            files_read_u64(fd, &item.size) != 0 ||
-            files_read_u64(fd, &item.modified) != 0 || (kind != 0 && kind != 1) ||
-            !files_valid_name(item.name)) {
+            files_read_u64(fd, &item.size) != 0 || files_read_u64(fd, &item.modified) != 0 ||
+            (kind != 0 && kind != 1) || !files_valid_name(item.name)) {
             close(fd);
             return -1;
         }
@@ -120,8 +119,9 @@ int files_panel_select(struct files *files, bool pen, size_t row) {
     if (parent && !row) return -1;
     index = row - parent;
     if (index >= panel->count) return -1;
-    panel->entries[index].state = panel->entries[index].state == FILE_STATUS_SELECTED
-                                          ? FILE_STATUS_NONE : FILE_STATUS_SELECTED;
+    panel->entries[index].state =
+            panel->entries[index].state == FILE_STATUS_SELECTED ? FILE_STATUS_NONE
+                                                                : FILE_STATUS_SELECTED;
     panel->entries[index].progress = 0;
     panel->entries[index].total = 0;
     panel->entries[index].done = 0;
@@ -176,13 +176,26 @@ static int state_text(FILE *output, const char *text) {
 
 static int state_entry(FILE *output, const struct file_entry *entry, bool parent) {
     if (fputs("{\"name\":", output) == EOF ||
-        state_text(output, parent ? ".." : entry->name) != 0 ||
-        fprintf(output, ",\"size\":%llu,\"modified\":%llu,\"directory\":%u,\"state\":%u,\"progress\":%u,\"total\":%llu,\"done\":%llu,\"parent\":%u}",
-                (unsigned long long) (parent ? 0 : entry->size),
-                (unsigned long long) (parent ? 0 : entry->modified), parent || entry->directory,
-                parent ? FILE_STATUS_NONE : entry->state, parent ? 0 : entry->progress,
-                (unsigned long long) (parent ? 0 : entry->total),
-                (unsigned long long) (parent ? 0 : entry->done), parent) < 0)
+        state_text(output, parent ? ".." : entry->name) != 0 || fprintf(output,
+                                                                        ",\"size\":%llu,\"modified\":%llu,\"directory\":%u,\"state\":%u,\"progress\":%u,\"total\":%llu,\"done\":%llu,\"parent\":%u}",
+                                                                        (unsigned long long) (parent
+                                                                                              ? 0
+                                                                                              : entry->size),
+                                                                        (unsigned long long) (parent
+                                                                                              ? 0
+                                                                                              : entry->modified),
+                                                                        parent || entry->directory,
+                                                                        parent ? FILE_STATUS_NONE
+                                                                               : entry->state,
+                                                                        parent ? 0
+                                                                               : entry->progress,
+                                                                        (unsigned long long) (parent
+                                                                                              ? 0
+                                                                                              : entry->total),
+                                                                        (unsigned long long) (parent
+                                                                                              ? 0
+                                                                                              : entry->done),
+                                                                        parent) < 0)
         return -1;
     return 0;
 }
@@ -206,8 +219,7 @@ int files_state_write(struct files *files) {
     FILE *output = fopen(FILE_STATE_TEMP, "w");
     int result = -1;
     if (!output) return -1;
-    if (fputs("{\"pen\":", output) != EOF &&
-        state_panel(output, &files->pen) == 0 &&
+    if (fputs("{\"pen\":", output) != EOF && state_panel(output, &files->pen) == 0 &&
         fputs(",\"windows\":", output) != EOF && state_panel(output, &files->windows) == 0 &&
         fputc('}', output) != EOF)
         result = 0;

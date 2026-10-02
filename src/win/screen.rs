@@ -11,19 +11,18 @@ use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
 use windows::Graphics::DirectX::DirectXPixelFormat;
 use windows::Win32::Foundation::{POINT, RECT};
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_READ, D3D11_MAP_READ,
-    D3D11_MAPPED_SUBRESOURCE, D3D11_TEX2D_VPIV, D3D11_TEX2D_VPOV, D3D11_TEXTURE2D_DESC,
-    D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
+    D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_TEX2D_VPIV, D3D11_TEX2D_VPOV, D3D11_TEXTURE2D_DESC,
+    D3D11_USAGE_DEFAULT, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
     D3D11_VIDEO_PROCESSOR_COLOR_SPACE, D3D11_VIDEO_PROCESSOR_CONTENT_DESC,
     D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0,
     D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0,
-    D3D11_VIDEO_PROCESSOR_STREAM, D3D11_VIDEO_USAGE_PLAYBACK_NORMAL,
+    D3D11_VIDEO_PROCESSOR_STREAM, D3D11_VIDEO_USAGE_PLAYBACK_NORMAL, D3D11_VIDEO_PROCESSOR_ROTATION_270,
     D3D11_VPIV_DIMENSION_TEXTURE2D, D3D11_VPOV_DIMENSION_TEXTURE2D, ID3D11DeviceContext,
     ID3D11Texture2D, ID3D11VideoContext, ID3D11VideoDevice, ID3D11VideoProcessor,
     ID3D11VideoProcessorInputView, ID3D11VideoProcessorOutputView,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_RATIONAL, DXGI_SAMPLE_DESC,
+    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_NV12, DXGI_RATIONAL, DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTOPRIMARY, MonitorFromPoint};
 use windows::Win32::System::WinRT::Direct3D11::{
@@ -41,22 +40,14 @@ pub struct Screen {
     session: GraphicsCaptureSession,
     source: ID3D11Texture2D,
     target: ID3D11Texture2D,
-    staging: ID3D11Texture2D,
-    pixels: Vec<u8>,
-    width: u32,
-    height: u32,
     have_frame: bool,
     token: i64,
     video_context: ID3D11VideoContext,
-    pub captured: u64,
     pub view: View,
+    pub dimensions: (u32, u32),
 }
 pub struct Frame<'a> {
-    pub pixels: &'a [u8],
-    pub width: u32,
-    pub height: u32,
-    pub stride: u32,
-    pub captured: u64,
+    pub texture: &'a ID3D11Texture2D,
 }
 impl Screen {
     pub fn new(
@@ -67,11 +58,12 @@ impl Screen {
     ) -> Result<Self, String> {
         let bounds = Bounds::current()?;
         viewport.update(bounds);
-        Self::build(gpu, video, bounds, signal).map_err(|error| error.to_string())
+        Self::build(gpu, video, viewport.canvas(), bounds, signal).map_err(|error| error.to_string())
     }
     fn build(
         gpu: &Gpu,
         video: Video,
+        canvas: Video,
         bounds: Bounds,
         signal: &Arc<Signal>,
     ) -> windows::core::Result<Self> {
@@ -106,12 +98,11 @@ impl Screen {
             )?;
             let target = Self::texture(
                 gpu,
-                u32::from(video.height),
-                u32::from(video.width),
-                DXGI_FORMAT_B8G8R8A8_UNORM,
+                u32::from(canvas.width),
+                u32::from(canvas.height),
+                DXGI_FORMAT_NV12,
                 D3D11_BIND_RENDER_TARGET.0 as u32,
             )?;
-            let staging = Self::staging(gpu, u32::from(video.height), u32::from(video.width))?;
             let video_device: ID3D11VideoDevice = gpu.device.cast()?;
             let video_context: ID3D11VideoContext = gpu.context.cast()?;
             let content = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
@@ -126,12 +117,13 @@ impl Screen {
                     Numerator: 60,
                     Denominator: 1,
                 },
-                OutputWidth: u32::from(video.height),
-                OutputHeight: u32::from(video.width),
+                OutputWidth: u32::from(canvas.width),
+                OutputHeight: u32::from(canvas.height),
                 Usage: D3D11_VIDEO_USAGE_PLAYBACK_NORMAL,
             };
             let enumerator = video_device.CreateVideoProcessorEnumerator(&content)?;
             let processor = video_device.CreateVideoProcessor(&enumerator, 0)?;
+            video_context.VideoProcessorSetStreamRotation(&processor, 0, true, D3D11_VIDEO_PROCESSOR_ROTATION_270);
             let mut input_view = None;
             video_device.CreateVideoProcessorInputView(
                 &source,
@@ -167,7 +159,7 @@ impl Screen {
             );
             video_context.VideoProcessorSetOutputColorSpace(
                 &processor,
-                &D3D11_VIDEO_PROCESSOR_COLOR_SPACE { _bitfield: 16 },
+                &D3D11_VIDEO_PROCESSOR_COLOR_SPACE { _bitfield: 0 },
             );
             let notify = Arc::clone(signal);
             let token = pool.FrameArrived(&TypedEventHandler::new(move |_, _| {
@@ -185,17 +177,10 @@ impl Screen {
                 session,
                 source,
                 target,
-                staging,
-                pixels: vec![
-                    0;
-                    u32::from(video.height) as usize * u32::from(video.width) as usize * 3
-                ],
-                width: u32::from(video.height),
-                height: u32::from(video.width),
                 have_frame: false,
                 token,
                 video_context,
-                captured: 0,
+                dimensions: (u32::from(canvas.width), u32::from(canvas.height)),
                 view: View {
                     height: video.height,
                     width: video.width,
@@ -225,29 +210,6 @@ impl Screen {
             Usage: D3D11_USAGE_DEFAULT,
             BindFlags: bind,
             CPUAccessFlags: 0,
-            MiscFlags: 0,
-        };
-        let mut texture = None;
-        unsafe {
-            gpu.device
-                .CreateTexture2D(&desc, None, Some(&mut texture))?
-        };
-        Ok(texture.unwrap())
-    }
-    fn staging(gpu: &Gpu, width: u32, height: u32) -> windows::core::Result<ID3D11Texture2D> {
-        let desc = D3D11_TEXTURE2D_DESC {
-            Width: width,
-            Height: height,
-            MipLevels: 1,
-            ArraySize: 1,
-            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            SampleDesc: DXGI_SAMPLE_DESC {
-                Count: 1,
-                Quality: 0,
-            },
-            Usage: D3D11_USAGE_STAGING,
-            BindFlags: 0,
-            CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
             MiscFlags: 0,
         };
         let mut texture = None;
@@ -297,32 +259,9 @@ impl Screen {
             self.video_context
                 .VideoProcessorBlt(&self.processor, &self.output_view, 0, &[stream])
                 .map_err(|error| error.to_string())?;
-            self.context.CopyResource(&self.staging, &self.target);
-            let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-            self.context
-                .Map(&self.staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
-                .map_err(|error| error.to_string())?;
-            let width = self.width as usize;
-            let row = width * 3;
-            for line in 0..self.height as usize {
-                let source = (mapped.pData as *const u8).add(line * mapped.RowPitch as usize);
-                let destination = self.pixels.as_mut_ptr().add(line * row);
-                for column in 0..width {
-                    let pixel = source.add(column * 4);
-                    let out = destination.add(column * 3);
-                    *out = *pixel;
-                    *out.add(1) = *pixel.add(1);
-                    *out.add(2) = *pixel.add(2);
-                }
-            }
-            self.context.Unmap(&self.staging, 0);
         }
         Ok(Some(Frame {
-            pixels: &self.pixels,
-            width: self.width,
-            height: self.height,
-            stride: self.width * 3,
-            captured: self.captured,
+            texture: &self.target,
         }))
     }
     fn acquire(&mut self) -> windows::core::Result<()> {
@@ -337,7 +276,6 @@ impl Screen {
             unsafe { self.context.CopyResource(&self.source, &texture) };
             frame.Close()?;
             self.have_frame = true;
-            self.captured += 1;
         }
         Ok(())
     }
