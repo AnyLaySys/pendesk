@@ -1,9 +1,10 @@
+use crate::all::protocol::TOUCH_POINTS;
 use std::mem::size_of;
-use std::sync::OnceLock;
-use windows::Win32::Foundation::{POINT, RECT};
+use std::time::{Duration, Instant};
+use windows::Win32::Foundation::{ERROR_NOT_READY, POINT, RECT};
 use windows::Win32::UI::Controls::{
-    CreateSyntheticPointerDevice, HSYNTHETICPOINTERDEVICE, POINTER_FEEDBACK_DEFAULT,
-    POINTER_TYPE_INFO, POINTER_TYPE_INFO_0,
+    CreateSyntheticPointerDevice, DestroySyntheticPointerDevice, HSYNTHETICPOINTERDEVICE,
+    POINTER_FEEDBACK_DEFAULT, POINTER_TYPE_INFO, POINTER_TYPE_INFO_0,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP, MOUSEEVENTF_ABSOLUTE,
@@ -12,13 +13,12 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput, VIRTUAL_KEY,
 };
 use windows::Win32::UI::Input::Pointer::{
-    InjectSyntheticPointerInput, POINTER_FLAG_DOWN, POINTER_FLAG_INCONTACT, POINTER_FLAG_INRANGE,
-    POINTER_FLAG_NEW, POINTER_FLAG_PRIMARY, POINTER_FLAG_UP, POINTER_FLAG_UPDATE, POINTER_INFO,
-    POINTER_TOUCH_INFO,
+    InjectSyntheticPointerInput, POINTER_FLAG_CANCELED, POINTER_FLAG_DOWN, POINTER_FLAG_INCONTACT,
+    POINTER_FLAG_INRANGE, POINTER_FLAG_UP, POINTER_FLAG_UPDATE, POINTER_INFO, POINTER_TOUCH_INFO,
 };
 use windows::Win32::UI::WindowsAndMessaging::{PT_TOUCH, TOUCH_MASK_CONTACTAREA};
-static TOUCH_DEVICE: OnceLock<Result<isize, String>> = OnceLock::new();
-#[derive(Clone, Copy)]
+use windows::core::HRESULT;
+#[derive(Clone, Copy, Default)]
 pub struct TouchContact {
     pub id: u8,
     pub phase: u8,
@@ -38,49 +38,61 @@ pub fn move_pointer(x: u16, y: u16) -> Result<(), String> {
         },
     })
 }
-pub fn touch(contacts: &[TouchContact]) -> Result<(), String> {
-    if contacts.is_empty() {
-        return Ok(());
-    }
-    let device = *TOUCH_DEVICE
-        .get_or_init(|| unsafe {
-            CreateSyntheticPointerDevice(PT_TOUCH, 10, POINTER_FEEDBACK_DEFAULT)
-                .map(|device| device.0 as isize)
-                .map_err(|error| error.to_string())
-        })
-        .as_ref()
-        .map_err(String::clone)?;
-    let primary = contacts
-        .iter()
-        .find(|contact| contact.phase != 3)
-        .map(|contact| contact.id);
-    let pointers = contacts
-        .iter()
-        .map(|contact| {
-            let point = POINT {
-                x: contact.x,
-                y: contact.y,
-            };
-            let mut flags = match contact.phase {
-                1 => {
-                    POINTER_FLAG_DOWN
-                        | POINTER_FLAG_NEW
-                        | POINTER_FLAG_INRANGE
-                        | POINTER_FLAG_INCONTACT
+#[derive(Default)]
+pub struct Touch {
+    device: Option<HSYNTHETICPOINTERDEVICE>,
+    active: [Option<TouchContact>; TOUCH_POINTS],
+    updated: Option<Instant>,
+}
+
+impl Touch {
+    pub fn inject(&mut self, contacts: &[TouchContact]) -> Result<(), String> {
+        if contacts.is_empty() {
+            return Ok(());
+        }
+        if contacts.len() > TOUCH_POINTS {
+            return Err("too many touch points".into());
+        }
+        if self.device.is_none() {
+            self.device = Some(
+                unsafe {
+                    CreateSyntheticPointerDevice(
+                        PT_TOUCH,
+                        TOUCH_POINTS as u32,
+                        POINTER_FEEDBACK_DEFAULT,
+                    )
                 }
+                .map_err(|error| error.to_string())?,
+            );
+        }
+        let mut pointers = [POINTER_TYPE_INFO::default(); TOUCH_POINTS];
+        let mut next = self.active;
+        for (pointer, contact) in pointers.iter_mut().zip(contacts) {
+            let slot = next
+                .get_mut(usize::from(contact.id))
+                .ok_or("invalid touch id")?;
+            let position = if contact.phase >= 3 {
+                slot.unwrap_or(*contact)
+            } else {
+                *contact
+            };
+            let point = POINT {
+                x: position.x,
+                y: position.y,
+            };
+            let flags = match contact.phase {
+                1 => POINTER_FLAG_DOWN | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT,
                 2 => POINTER_FLAG_UPDATE | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT,
-                _ => POINTER_FLAG_UP | POINTER_FLAG_INRANGE,
+                3 => POINTER_FLAG_UP,
+                _ => POINTER_FLAG_UP | POINTER_FLAG_CANCELED,
             };
-            if primary == Some(contact.id) {
-                flags |= POINTER_FLAG_PRIMARY;
-            }
             let area = RECT {
-                left: contact.x.saturating_sub(2),
-                top: contact.y.saturating_sub(2),
-                right: contact.x.saturating_add(2),
-                bottom: contact.y.saturating_add(2),
+                left: position.x.saturating_sub(2),
+                top: position.y.saturating_sub(2),
+                right: position.x.saturating_add(2),
+                bottom: position.y.saturating_add(2),
             };
-            POINTER_TYPE_INFO {
+            *pointer = POINTER_TYPE_INFO {
                 r#type: PT_TOUCH,
                 Anonymous: POINTER_TYPE_INFO_0 {
                     touchInfo: POINTER_TOUCH_INFO {
@@ -92,20 +104,87 @@ pub fn touch(contacts: &[TouchContact]) -> Result<(), String> {
                             ptPixelLocationRaw: point,
                             ..Default::default()
                         },
-                        touchFlags: 0,
                         touchMask: TOUCH_MASK_CONTACTAREA,
                         rcContact: area,
                         rcContactRaw: area,
-                        orientation: 0,
-                        pressure: 0,
                         ..Default::default()
                     },
                 },
+            };
+            *slot = if contact.phase >= 3 {
+                None
+            } else {
+                Some(*contact)
+            };
+        }
+        let deadline = Instant::now() + Duration::from_millis(2);
+        loop {
+            match unsafe {
+                InjectSyntheticPointerInput(self.device.unwrap(), &pointers[..contacts.len()])
+            } {
+                Ok(()) => {
+                    self.active = next;
+                    self.updated = Some(Instant::now());
+                    return Ok(());
+                }
+                Err(error)
+                    if error.code() == HRESULT::from_win32(ERROR_NOT_READY.0)
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::yield_now()
+                }
+                Err(error) => {
+                    self.reset();
+                    return Err(error.to_string());
+                }
             }
-        })
-        .collect::<Vec<_>>();
-    unsafe { InjectSyntheticPointerInput(HSYNTHETICPOINTERDEVICE(device as *mut _), &pointers) }
-        .map_err(|error| error.to_string())
+        }
+    }
+
+    pub fn timeout(&self) -> i32 {
+        match self
+            .updated
+            .filter(|_| self.active.iter().any(Option::is_some))
+        {
+            Some(updated) => Duration::from_millis(200)
+                .saturating_sub(updated.elapsed())
+                .as_millis() as i32,
+            None => -1,
+        }
+    }
+
+    pub fn refresh(&mut self) -> Result<(), String> {
+        self.update(2)
+    }
+
+    pub fn cancel(&mut self) -> Result<(), String> {
+        self.update(4)
+    }
+
+    fn update(&mut self, phase: u8) -> Result<(), String> {
+        let mut contacts = [TouchContact::default(); TOUCH_POINTS];
+        let mut count = 0;
+        for contact in self.active.iter().flatten() {
+            contacts[count] = TouchContact { phase, ..*contact };
+            count += 1;
+        }
+        self.inject(&contacts[..count])
+    }
+
+    fn reset(&mut self) {
+        if let Some(device) = self.device.take() {
+            unsafe { DestroySyntheticPointerDevice(device) };
+        }
+        self.active.fill(None);
+        self.updated = None;
+    }
+}
+
+impl Drop for Touch {
+    fn drop(&mut self) {
+        let _ = self.cancel();
+        self.reset();
+    }
 }
 pub fn button(button: u8, down: bool) -> Result<(), String> {
     let flags = match (button, down) {

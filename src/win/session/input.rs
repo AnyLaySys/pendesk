@@ -3,11 +3,13 @@ use crate::input;
 use crate::signal::Signal;
 use crate::viewport::Viewport;
 use std::net::TcpStream;
+use std::os::windows::io::AsRawSocket;
 use std::sync::{
     Arc, Condvar, Mutex,
     atomic::{AtomicBool, Ordering},
 };
 use std::thread;
+use windows::Win32::Networking::WinSock::{POLLRDNORM, SOCKET, WSAPOLLFD, WSAPoll};
 
 fn release_all(keys: &mut [bool; 256], buttons: &mut [bool; 4]) {
     for (key, pressed) in keys.iter_mut().enumerate() {
@@ -37,8 +39,23 @@ pub fn spawn(
     thread::spawn(move || {
         let mut pressed_keys = [false; 256];
         let mut pressed_buttons = [false; 4];
-        let mut active_touches = [None; 10];
+        let mut touches = input::Touch::default();
+        let mut socket = WSAPOLLFD {
+            fd: SOCKET(stream.as_raw_socket() as usize),
+            events: POLLRDNORM,
+            ..Default::default()
+        };
         while active.load(Ordering::Relaxed) {
+            match unsafe { WSAPoll(&mut socket, 1, touches.timeout()) } {
+                -1 => break,
+                0 => {
+                    if touches.refresh().is_err() {
+                        break;
+                    }
+                    continue;
+                }
+                _ => {}
+            }
             match protocol::read_input(&mut stream) {
                 Ok(Input::Move(x, y, sequence)) => {
                     let point = {
@@ -70,6 +87,7 @@ pub fn spawn(
                     if enabled {
                         refresh.store(true, Ordering::Relaxed);
                     } else {
+                        let _ = touches.cancel();
                         release_all(&mut pressed_keys, &mut pressed_buttons);
                     }
                     video_active.store(enabled, Ordering::Relaxed);
@@ -78,29 +96,25 @@ pub fn spawn(
                 Ok(Input::Wheel(delta)) => {
                     let _ = input::wheel(delta);
                 }
-                Ok(Input::Touch(points)) => {
+                Ok(Input::Touch { points, count }) => {
+                    if !video_active.load(Ordering::Relaxed) {
+                        continue;
+                    }
                     let view = viewport.lock().unwrap();
-                    let contacts = points
-                        .iter()
-                        .map(|point| {
-                            let (x, y) = view.touch_point(point.x, point.y);
-                            input::TouchContact {
-                                id: point.id,
-                                phase: point.phase,
-                                x,
-                                y,
-                            }
-                        })
-                        .collect::<Vec<_>>();
+                    let mut contacts = [input::TouchContact::default(); protocol::TOUCH_POINTS];
+                    for (contact, point) in contacts.iter_mut().zip(&points[..count]) {
+                        let (x, y) = view.touch_point(point.x, point.y);
+                        *contact = input::TouchContact {
+                            id: point.id,
+                            phase: point.phase,
+                            x,
+                            y,
+                        };
+                    }
                     drop(view);
-                    if input::touch(&contacts).is_ok() {
-                        for contact in contacts {
-                            active_touches[usize::from(contact.id)] = if contact.phase == 3 {
-                                None
-                            } else {
-                                Some(contact)
-                            };
-                        }
+                    if let Err(error) = touches.inject(&contacts[..count]) {
+                        eprintln!("Touch injection: {error}");
+                        break;
                     }
                 }
                 Ok(Input::Audio(enabled)) => {
@@ -113,16 +127,11 @@ pub fn spawn(
                 }
                 _ => break,
             }
+            if touches.timeout() == 0 && touches.refresh().is_err() {
+                break;
+            }
         }
-        let releases = active_touches
-            .into_iter()
-            .flatten()
-            .map(|mut contact| {
-                contact.phase = 3;
-                contact
-            })
-            .collect::<Vec<_>>();
-        let _ = input::touch(&releases);
+        drop(touches);
         release_all(&mut pressed_keys, &mut pressed_buttons);
         active.store(false, Ordering::Relaxed);
         signal.set();

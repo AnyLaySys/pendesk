@@ -1,7 +1,7 @@
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
 const MAGIC: [u8; 4] = *b"PDSK";
-pub const VERSION: u8 = 13;
+pub const VERSION: u8 = 14;
 pub const FPS: u32 = 60;
 const CONFIG: u8 = 0x10;
 const AUDIO: u8 = 0x11;
@@ -14,7 +14,7 @@ const WHEEL: u8 = 0x26;
 const AUDIO_TOGGLE: u8 = 0x27;
 const CAMERA_TOGGLE: u8 = 0x29;
 const TOUCH: u8 = 0x2a;
-const TOUCH_POINTS: u8 = 10;
+pub const TOUCH_POINTS: usize = 10;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Video {
     pub width: u16,
@@ -32,7 +32,7 @@ pub struct View {
     pub x: u16,
     pub y: u16,
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct TouchPoint {
     pub id: u8,
     pub phase: u8,
@@ -49,7 +49,10 @@ pub enum Input {
     Wheel(i16),
     Audio(bool),
     Camera(bool),
-    Touch(Vec<TouchPoint>),
+    Touch {
+        points: [TouchPoint; TOUCH_POINTS],
+        count: usize,
+    },
 }
 pub fn authenticate_with_magic(
     stream: &mut TcpStream,
@@ -166,28 +169,29 @@ pub fn read_input(stream: &mut TcpStream) -> io::Result<Input> {
                 )),
             }
         }
-        TOUCH => Ok(Input::Touch(read_touch(stream)?)),
+        TOUCH => read_touch(stream),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "unknown input packet",
         )),
     }
 }
-fn read_touch(stream: &mut TcpStream) -> io::Result<Vec<TouchPoint>> {
+fn read_touch(stream: &mut TcpStream) -> io::Result<Input> {
     let mut count = [0];
     stream.read_exact(&mut count)?;
-    if count[0] > TOUCH_POINTS {
+    let count = usize::from(count[0]);
+    if count > TOUCH_POINTS {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "too many touch points",
         ));
     }
-    let mut points = Vec::with_capacity(usize::from(count[0]));
+    let mut points = [TouchPoint::default(); TOUCH_POINTS];
+    let mut packet = [0u8; TOUCH_POINTS * 6];
+    stream.read_exact(&mut packet[..count * 6])?;
     let mut ids = 0u16;
-    for _ in 0..count[0] {
-        let mut bytes = [0; 6];
-        stream.read_exact(&mut bytes)?;
-        if bytes[0] >= TOUCH_POINTS || !(1..=3).contains(&bytes[1]) {
+    for (point, bytes) in points.iter_mut().zip(packet[..count * 6].chunks_exact(6)) {
+        if usize::from(bytes[0]) >= TOUCH_POINTS || !(1..=4).contains(&bytes[1]) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "invalid touch point",
@@ -201,14 +205,14 @@ fn read_touch(stream: &mut TcpStream) -> io::Result<Vec<TouchPoint>> {
             ));
         }
         ids |= bit;
-        points.push(TouchPoint {
+        *point = TouchPoint {
             id: bytes[0],
             phase: bytes[1],
             x: u16::from_be_bytes([bytes[2], bytes[3]]),
             y: u16::from_be_bytes([bytes[4], bytes[5]]),
-        });
+        };
     }
-    Ok(points)
+    Ok(Input::Touch { points, count })
 }
 fn read_u16(stream: &mut TcpStream) -> io::Result<u16> {
     let mut value = [0; 2];

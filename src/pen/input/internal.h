@@ -19,4 +19,6 @@ int touch_flush(struct input_state *input);
 
 int touch_read(struct input_state *input);
 
+int touch_timeout(const struct input_state *input);
+
 #endif

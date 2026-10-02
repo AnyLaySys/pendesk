@@ -103,7 +103,7 @@ fn parse_setup(mut arguments: impl Iterator<Item = String>) -> Result<Setup, Str
             "--auth-key" | "--authkey" => setup.authkey = Some(value()?),
             "--host" | "--hostaddress" => setup.host = Some(value()?),
             "--port" => setup.port = number(&value()?, "--port")?,
-            "--serial" => setup.serial = Some(value()?),
+            "--serial" | "-s" => setup.serial = Some(value()?),
             "--token" => setup.token = Some(value()?),
             "--help" | "-h" => return Err(usage()),
             _ => return Err(usage()),
@@ -156,5 +156,5 @@ fn nibble(value: u8) -> Option<u8> {
     }
 }
 pub fn usage() -> String {
-    "Usage: pendesk [--token <64-hex> [--port <1-65535>]]\n       pendesk install [--serial <device>]\n       pendesk configure [--host <Tailnet IPv4>] [--serial <device>] [--token <64-hex>] [--auth-key <key>]\n       pendesk restart|stop|+startup|-startup".into()
+    "Usage: pendesk [--token <64-hex> [--port <1-65535>]]\n       pendesk install [-s|--serial <device>]\n       pendesk configure [--host <Tailnet IPv4>] [-s|--serial <device>] [--token <64-hex>] [--auth-key <key>]\n       pendesk restart|stop|+startup|-startup".into()
 }

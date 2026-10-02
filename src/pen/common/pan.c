@@ -24,6 +24,7 @@ struct pan_shared *pan_open(int create) {
         atomic_store(&shared->region, 0);
         atomic_store(&shared->rendered, 0);
         atomic_store(&shared->display, 0);
+        atomic_store(&shared->rotated, 0);
     }
     return shared;
 }

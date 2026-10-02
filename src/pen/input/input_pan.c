@@ -73,17 +73,3 @@ int input_send_move(struct input_state *input, int16_t x, int16_t y) {
                         sequence >> 8, sequence};
     return link_send(input->link, packet, sizeof(packet));
 }
-
-void input_pan_touch(struct input_state *input, uint8_t *packet) {
-    if (!input->pan) return;
-    uint32_t origin = atomic_load(&input->pan->rendered);
-    for (unsigned int i = 0; i < packet[1]; ++i) {
-        uint8_t *point = packet + 2 + i * PAN_POINT_SIZE;
-        uint32_t x = ((uint32_t) point[2] << 8 | point[3]) + (origin >> 16);
-        uint32_t y = ((uint32_t) point[4] << 8 | point[5]) + (origin & 65535);
-        point[2] = x >> 8;
-        point[3] = x;
-        point[4] = y >> 8;
-        point[5] = y;
-    }
-}

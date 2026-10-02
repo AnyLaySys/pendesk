@@ -14,14 +14,7 @@
 #include <errno.h>
 #include <poll.h>
 #include <string.h>
-#include <time.h>
 #include <unistd.h>
-
-static uint64_t milliseconds(void) {
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    return (uint64_t) now.tv_sec * 1000 + (uint32_t) now.tv_nsec / 1000000;
-}
 
 void video_receive(struct input_state *input, struct preview *preview, struct video *video,
                    const struct cfg *cfg) {
@@ -97,7 +90,7 @@ void video_receive(struct input_state *input, struct preview *preview, struct vi
         if (events[2].revents & POLLIN && mic_forward(&microphone, video, cfg) != 0) break;
         if (events[3].revents & POLLIN && cam_forward(&camera, video, cfg) != 0) break;
         if (events[0].revents & POLLIN) {
-            while (control_length < sizeof(control)) {
+            for (;;) {
                 ssize_t length = read(link->fd, control + control_length,
                                       sizeof(control) - control_length);
                 if (length > 0) {
@@ -115,7 +108,6 @@ void video_receive(struct input_state *input, struct preview *preview, struct vi
                     goto done;
                 break;
             }
-            if (control_length == sizeof(control)) break;
         }
         if (events[0].revents & (POLLERR | POLLHUP | POLLNVAL) ||
             events[1].revents & (POLLERR | POLLHUP | POLLNVAL))

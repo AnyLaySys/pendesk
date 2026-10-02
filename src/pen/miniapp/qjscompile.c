@@ -17,7 +17,7 @@ static int module_init(JSContext *context, JSModuleDef *module) {
 static JSModuleDef *load(JSContext *context, const char *name, void *opaque) {
     JSModuleDef *module;
     (void) opaque;
-    if (strcmp(name, "global") && strcmp(name, "fs")) return NULL;
+    if (strcmp(name, "global") && strcmp(name, "fs") && strcmp(name, "vid")) return NULL;
     module = JS_NewCModule(context, name, module_init);
     if (module) JS_AddModuleExport(context, module, "default");
     return module;

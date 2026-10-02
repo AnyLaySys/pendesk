@@ -32,23 +32,9 @@ int control_read(struct input_state *input) {
         size_t offset = 0;
         while (offset < input->control_length) {
             uint8_t type = input->control_buffer[offset];
-            size_t length;
-            if (type == 0x2a) {
-                if (offset + 2 > input->control_length) break;
-                if (input->control_buffer[offset + 1] > 10) return -1;
-                length = 2 + input->control_buffer[offset + 1] * PAN_POINT_SIZE;
-            } else {
-                length =
-                        type == 2 || type == 0x27 || type == 0x28 || type == 0x29 ? 2 : type == 0x20
-                                                                                        ? 5 :
-                                                                                        type ==
-                                                                                        0x21 ||
-                                                                                        type == 0x26
-                                                                                        ? 3 :
-                                                                                        type == 0x23
-                                                                                        ? 4 : 0;
-                if (!length) return -1;
-            }
+            size_t length = type == 2 || type == 0x27 || type == 0x28 || type == 0x29 ? 2 :
+                            type == 0x23 ? 4 : 0;
+            if (!length) return -1;
             if (offset + length > input->control_length) break;
             if (type == 2) {
                 bool paused = input->control_buffer[offset + 1] & STATE_VIDEO_PAUSED;
@@ -58,6 +44,8 @@ int control_read(struct input_state *input) {
                 atomic_store(&input->recording, recording);
                 input->blocked = input->control_buffer[offset + 1] & STATE_BLOCKED;
                 input->mouse = !(input->control_buffer[offset + 1] & STATE_MOUSE_PAUSED);
+                input->direct = input->control_buffer[offset + 1] & STATE_TOUCH;
+                input->pad = input->control_buffer[offset + 1] & STATE_TOUCHPAD;
                 if (cancel_touch(input) != 0) return -1;
                 if (link_running(input->link)) {
                     uint8_t video[] = {0x25, paused ? 0 : 1};
@@ -72,16 +60,7 @@ int control_read(struct input_state *input) {
                 atomic_store(&input->camera, camera);
                 atomic_store(&input->recording, camera);
                 if (link_send(input->link, input->control_buffer + offset, length) != 0) return -1;
-            } else if (type == 0x20 && input->mouse) {
-                uint8_t *move = input->control_buffer + offset;
-                if (input_send_move(input, (int16_t)((uint16_t) move[1] << 8 | move[2]),
-                                    (int16_t)((uint16_t) move[3] << 8 | move[4])) != 0)
-                    return -1;
-            } else if (type == 0x2a) {
-                input_pan_touch(input, input->control_buffer + offset);
-                if (link_send(input->link, input->control_buffer + offset, length) != 0) return -1;
-            } else if ((input->mouse || (type != 0x20 && type != 0x21 && type != 0x26)) &&
-                       link_send(input->link, input->control_buffer + offset, length) != 0)
+            } else if (link_send(input->link, input->control_buffer + offset, length) != 0)
                 return -1;
             offset += length;
         }

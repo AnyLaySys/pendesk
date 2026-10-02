@@ -21,6 +21,12 @@ struct link;
 struct contact {
     int x;
     int y;
+    int tracking;
+    bool active;
+    bool ignored;
+};
+struct touch_point {
+    uint16_t x, y;
     bool active;
 };
 struct mode {
@@ -55,6 +61,8 @@ struct touch {
     int slot;
     bool multitouch;
     enum gesture gesture;
+    unsigned int pad_contacts;
+    int primary;
     uint16_t last_x;
     uint16_t last_y;
     uint16_t origin_x;
@@ -62,6 +70,11 @@ struct touch {
     uint32_t distance;
     uint64_t started;
     struct contact contacts[CONTACTS];
+    struct touch_point sent[CONTACTS];
+    struct touch_point pending[CONTACTS];
+    bool pending_valid;
+    bool dropped;
+    bool rotated;
 };
 struct inputs {
     int *keyboard;
@@ -92,6 +105,8 @@ struct input_state {
     int control;
     bool blocked;
     bool mouse;
+    bool direct;
+    bool pad;
     pthread_t thread;
     bool thread_started;
     char control_path[108];
@@ -121,7 +136,5 @@ void input_pan_configure(struct input_state *input, uint16_t width, uint16_t hei
 void input_pan_ack(struct input_state *input, uint16_t x, uint16_t y, uint32_t sequence);
 
 int input_send_move(struct input_state *input, int16_t x, int16_t y);
-
-void input_pan_touch(struct input_state *input, uint8_t *packet);
 
 #endif

@@ -7,11 +7,12 @@
 #include <errno.h>
 #include <poll.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 static void *input_loop(void *argument) {
     struct input_state *input = argument;
-    size_t count = input->inputs.keyboard_count + 2;
+    size_t count = input->inputs.keyboard_count + 3;
     struct pollfd *events = calloc(count, sizeof(*events));
     if (!events) {
         link_stop(input->link);
@@ -19,19 +20,21 @@ static void *input_loop(void *argument) {
     }
     events[0] = (struct pollfd) {.fd = input->control, .events = POLLIN};
     events[1] = (struct pollfd) {.fd = input->inputs.touch.fd, .events = POLLIN};
+    events[2] = (struct pollfd) {.fd = input->link->fd, .events = POLLRDHUP};
     for (size_t index = 0; index != input->inputs.keyboard_count; ++index)
-        events[index + 2] = (struct pollfd) {.fd = input->inputs.keyboard[index], .events = POLLIN};
+        events[index + 3] = (struct pollfd) {.fd = input->inputs.keyboard[index], .events = POLLIN};
     while (link_running(input->link)) {
-        int result = poll(events, count, 20);
+        int result = poll(events, count, touch_timeout(input));
         if (result < 0) {
             if (errno == EINTR) continue;
             break;
         }
+        if (events[2].revents & (POLLRDHUP | POLLHUP | POLLERR | POLLNVAL)) break;
         if (events[0].revents && control_read(input) != 0) break;
         if (events[1].revents && touch_read(input) != 0) break;
         for (size_t index = 0; index != input->inputs.keyboard_count; ++index) {
-            if (events[index + 2].revents &&
-                keyboard_read(input, events[index + 2].fd) != 0) {
+            if (events[index + 3].revents &&
+                keyboard_read(input, input->inputs.keyboard[index]) != 0) {
                 result = -1;
                 break;
             }
@@ -92,6 +95,11 @@ int input_start(struct input_state *input, struct link *link, struct mode mode) 
     if (input->pan) atomic_store(&input->pan->display, (uint32_t) mode.height << 16 | mode.width);
     input->move_sequence = 0;
     input->inputs.touch.gesture = GESTURE_CANCEL;
+    input->inputs.touch.pad_contacts = 0;
+    memset(input->inputs.touch.sent, 0, sizeof(input->inputs.touch.sent));
+    input->inputs.touch.pending_valid = false;
+    for (unsigned int i = 0; i < CONTACTS; ++i)
+        input->inputs.touch.contacts[i].ignored = input->inputs.touch.contacts[i].active;
     input_set_view(input, (struct view) {0});
     return pthread_create(&input->thread, NULL, input_loop, input) == 0
            ? (input->thread_started = true, 0) : -1;

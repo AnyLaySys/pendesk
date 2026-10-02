@@ -6,12 +6,54 @@
 #include <gst/app/gstappsrc.h>
 #include <gst/video/videooverlay.h>
 #include <gst/video/video.h>
+#include <quickjs.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <sys/un.h>
 #include <stdio.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
+extern void registerCModuleLoader(const char *, JSModuleDef *(*)(JSContext *, const char *));
+
+static char *control_path;
+
+static JSValue send_control(JSContext *context, JSValueConst self, int count, JSValueConst *args) {
+    if (count != 1) return JS_ThrowTypeError(context, "expected an input buffer");
+    size_t length;
+    uint8_t *bytes = JS_GetArrayBuffer(context, &length, args[0]);
+    if (!bytes) return JS_EXCEPTION;
+    if (length > PIPE_BUF) return JS_ThrowRangeError(context, "input buffer is too large");
+    int fd = open(control_path, O_RDWR | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) return JS_FALSE;
+    ssize_t written;
+    do { written = write(fd, bytes, length); } while (written < 0 && errno == EINTR);
+    close(fd);
+    return JS_NewBool(context, written == (ssize_t)length);
+}
+
+static int control_init(JSContext *context, JSModuleDef *module) {
+    if (!control_path) {
+        Dl_info info;
+        if (!dladdr((void *)send_control, &info)) return -1;
+        char *library = g_canonicalize_filename(info.dli_fname, NULL);
+        char *directory = g_path_get_dirname(library);
+        control_path = g_canonicalize_filename("../../data/input.fifo", directory);
+        g_free(directory);
+        g_free(library);
+    }
+    JSValue function = JS_NewCFunction(context, send_control, "control", 1);
+    if (JS_IsException(function)) return -1;
+    return JS_SetModuleExport(context, module, "default", function);
+}
+
+static JSModuleDef *control_load(JSContext *context, const char *name) {
+    JSModuleDef *module = JS_NewCModule(context, name, control_init);
+    if (module) JS_AddModuleExport(context, module, "default");
+    return module;
+}
 
 struct source {
     GWeakRef element;
@@ -168,6 +210,7 @@ static gboolean update_display(GstElement *element, gboolean cached, GstBuffer *
     }
     gst_video_overlay_set_render_rectangle(GST_VIDEO_OVERLAY(element), 0, 0, display_width, display_height);
     atomic_store(&pan->rendered, position);
+    atomic_store(&pan->rotated, direction == GST_VIDEO_ORIENTATION_180);
     return TRUE;
 }
 
@@ -501,6 +544,7 @@ static gboolean added(GSignalInvocationHint *hint, guint count, const GValue *va
 }
 
 void custom_init_jsapis(void) {
+    registerCModuleLoader("vid", control_load);
     static gboolean initialized;
     gst_init(NULL, NULL);
     if (!initialized) {

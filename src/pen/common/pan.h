@@ -10,6 +10,7 @@ struct pan_shared {
     _Atomic uint64_t region;
     _Atomic uint32_t rendered;
     _Atomic uint32_t display;
+    _Atomic uint32_t rotated;
 };
 
 struct pan_shared *pan_open(int create);

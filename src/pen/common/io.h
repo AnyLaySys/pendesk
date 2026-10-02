@@ -3,8 +3,11 @@
 
 #include <signal.h>
 #include <stddef.h>
+#include <stdint.h>
 
 extern volatile sig_atomic_t alive;
+
+uint64_t milliseconds(void);
 
 int io_wait(int fd, short events);
 

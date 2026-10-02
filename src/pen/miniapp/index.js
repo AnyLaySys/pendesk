@@ -1,5 +1,6 @@
 import global from "global"
 import fs from "fs"
+import sendControl from "vid"
 const native = new global.Global()
 const APPID = "__APPID__"
 const RUN = "latest=; for app in /userdisk/*/data/mini_app/pkg/" + APPID + "/*/bin/run /userdisk/*/*/data/mini_app/pkg/" + APPID + "/*/bin/run /userdata/*/data/mini_app/pkg/" + APPID + "/*/bin/run /userdata/*/*/data/mini_app/pkg/" + APPID + '/*/bin/run; do [ -f "$app" ] || continue; if [ -z "$latest" ] || [ "$app" -nt "$latest" ]; then latest=$app; fi; done; [ -n "$latest" ] && exec /bin/sh "$latest" "$@"; exit 1'
@@ -9,10 +10,13 @@ const STATE_BLOCKED = 1
 const STATE_VIDEO_PAUSED = 2
 const STATE_MOUSE_PAUSED = 4
 const STATE_RECORDING = 8
+const STATE_TOUCH = 16
+const STATE_TOUCHPAD = 32
 const FONT = "Google Sans Flex"
 const icons = { screen: "view.png", mouse: "mouse.png", touch: "touch.png", keyboard: "kb.png", mic: "mic.png", camera: "cam.png", folder: "folder.png", file: "file.png", back: "back.png", refresh: "rf.png", exit: "exit.png", sound: "sound.png", power: "power.png" }
 
 function control(bytes, ordered = false) {
+   if (bytes[0] === 0x23) return sendControl(new Uint8Array(bytes).buffer)
    const packet = bytes.map((value) => "\\" + ("00" + (value & 255).toString(8)).slice(-3)).join("")
    const command = "/bin/sh -lc " + quote(RUN) + " -- input " + quote(packet) + " >/dev/null 2>&1"
    native.execShell(ordered ? command : command + " &")
@@ -22,8 +26,8 @@ function launch() {
    native.execShell(command + " < /dev/null > /dev/null 2>&1 &")
 }
 
-function state(blocked, paused, mousePaused = false, recording = false) {
-   control([2, (blocked ? STATE_BLOCKED : 0) | (paused ? STATE_VIDEO_PAUSED : 0) | (mousePaused ? STATE_MOUSE_PAUSED : 0) | (recording ? STATE_RECORDING : 0)], true)
+function state(blocked, paused, mousePaused = false, recording = false, touch = false, pad = false) {
+   control([2, (blocked ? STATE_BLOCKED : 0) | (paused ? STATE_VIDEO_PAUSED : 0) | (mousePaused ? STATE_MOUSE_PAUSED : 0) | (recording ? STATE_RECORDING : 0) | (touch ? STATE_TOUCH : 0) | (pad ? STATE_TOUCHPAD : 0)], true)
 }
 
 const keys = { Esc: 27, Tab: 9, Back: 8, Enter: 13, Del: 46, End: 35, " ": 32, Left: 37, Up: 38, Right: 39, Down: 40, "`": 192, "-": 189, "=": 187, "[": 219, "]": 221, "\\": 220, ";": 186, "'": 222, ",": 188, ".": 190, "/": 191 }
@@ -31,17 +35,9 @@ const shifted = { "`": "~", "1": "!", "2": "@", "3": "#", "4": "$", "5": "%", "6
 const arrows = { Left: "\u2190", Up: "\u2191", Right: "\u2192", Down: "\u2193" }
 const keyboardWidth = 15
 const fileRows = 7
-const gestureThreshold = 9
-const mouseSensitivityX = 70
-const mouseSensitivityY = 256
-const touchDistance = (x, y) => Math.floor(Math.abs(x) > Math.abs(y) ? Math.abs(x) + Math.abs(y) / 2 : Math.abs(y) + Math.abs(x) / 2)
 const key = (label, span = 1) => ({ label, span })
 const close = (span = 1) => ({ close: true, span })
 const gap = (span = 1) => ({ span })
-const short = (value) => Math.max(-32768, Math.min(32767, Math.round(value)))
-const move = (x, y) => [0x20, short(x) >> 8, short(x), short(y) >> 8, short(y)]
-const button = (value, down) => [0x21, value, down ? 1 : 0]
-const wheel = (value) => [0x26, short(value) >> 8, short(value)]
 const row = (...entries) => {
    let column = 0
    return entries.reduce((placed, entry) => {
@@ -64,7 +60,7 @@ const parseDevices = (value) =>
 
 const script = {
    data() {
-      const data = { active: true, job: null, pad: null, held: [], directTouches: {}, touchTimer: null, fileTouch: null, fileScrolled: false, fileTransferPolling: false, fileTransferStarted: false, fileTransferSide: "", fileTransferTimer: null, devices: [], audioOn: false, screenOn: false, mouseOn: false, touchOn: false, micOn: false, cameraOn: false, view: "devices", fileState: { pen: [], windows: [] }, fileOffset: { pen: 0, windows: 0 }, fileRead: 0, caps: false, modifiers: { Shift: false, Ctrl: false, Win: false, Alt: false } }
+      const data = { active: true, job: null, held: [], fileTouch: null, fileScrolled: false, fileTransferPolling: false, fileTransferStarted: false, fileTransferSide: "", fileTransferTimer: null, devices: [], audioOn: false, screenOn: false, mouseOn: false, touchOn: false, micOn: false, cameraOn: false, view: "devices", fileState: { pen: [], windows: [] }, fileOffset: { pen: 0, windows: 0 }, fileRead: 0, caps: false, modifiers: { Shift: false, Ctrl: false, Win: false, Alt: false } }
       fs.readFile("/userdisk/PenDesk/CtrlDev", "utf8")
          .then((value) => {
             data.devices = parseDevices(value)
@@ -88,8 +84,14 @@ const script = {
          return
       }
       launch()
-      state(this.view !== "desktop", !this.screenOn || this.view === "tools", !this.mouseOn, this.micOn)
+      state(this.view !== "desktop", !this.screenOn || this.view === "tools", !this.mouseOn, this.micOn, this.touchOn, this.view === "keyboard")
       this.startVideo()
+   },
+   deactivated() {
+      this.active = false
+      this.stopVideo()
+      this.releaseKeys()
+      state(true, true, true, this.micOn)
    },
    beforeDestroy() {
       this.exitDevice(false)
@@ -126,8 +128,6 @@ const script = {
          this.active = false
          this.audioOn = this.micOn = this.cameraOn = false
          this.stopVideo()
-         this.touchRelease()
-         this.finishPad(false)
          this.releaseKeys()
          native.execShell("/bin/sh -lc " + quote(RUN) + " -- stop >/dev/null 2>&1 &")
          if (refresh) {
@@ -164,19 +164,17 @@ const script = {
       },
       toggleScreen() {
          this.screenOn = !this.screenOn
-         state(this.view !== "desktop", !this.screenOn || this.view === "tools", !this.mouseOn, this.micOn)
+         state(this.view !== "desktop", !this.screenOn || this.view === "tools", !this.mouseOn, this.micOn, this.touchOn, this.view === "keyboard")
          if (this.screenOn) this.startVideo()
          else this.stopVideo()
       },
       toggleMouse() {
-         this.touchRelease()
-         this.finishPad(false)
          if (this.touchOn) this.touchOn = false
          else if (this.mouseOn) {
             this.mouseOn = false
             this.touchOn = true
          } else this.mouseOn = true
-         state(true, true, !this.mouseOn, this.micOn)
+         state(true, true, !this.mouseOn, this.micOn, this.touchOn)
       },
       releaseKeys() {
          const packet = []
@@ -194,8 +192,6 @@ const script = {
          this.held = []
       },
       showTools() {
-         this.touchRelease()
-         this.finishPad(false)
          this.releaseKeys()
          this.stopVideo()
          this.view = "tools"
@@ -204,7 +200,7 @@ const script = {
       showKeyboard() {
          this.view = "keyboard"
          if (this.screenOn) this.startVideo()
-         state(true, !this.screenOn, !this.mouseOn, this.micOn)
+         state(true, !this.screenOn, !this.mouseOn, this.micOn, this.touchOn, true)
       },
       refreshDevices() {
          return fs.readFile("/userdisk/PenDesk/CtrlDev", "utf8").then(
@@ -226,7 +222,7 @@ const script = {
          state(true, true, true, false)
          native.execShell("/bin/sh -lc " + quote(RUN) + " -- switch-device " + device + " < /dev/null > /dev/null 2>&1 &")
          this.view = "desktop"
-         state(false, !this.screenOn, !this.mouseOn, this.micOn)
+         state(false, !this.screenOn, !this.mouseOn, this.micOn, this.touchOn)
          this.startVideo()
       },
       showFiles() {
@@ -237,11 +233,9 @@ const script = {
          else this.fileAction("reset")
       },
       showDesktop() {
-         this.touchRelease()
-         this.finishPad(false)
          this.releaseKeys()
          this.view = "desktop"
-         state(false, !this.screenOn, !this.mouseOn, this.micOn)
+         state(false, !this.screenOn, !this.mouseOn, this.micOn, this.touchOn)
          this.startVideo()
       },
       fileAction(action) {
@@ -326,203 +320,6 @@ const script = {
          this.fileScroll(side, touch.offset + Math.round(distance / 27))
          return true
       },
-      padTouches(event) {
-         const active = event && event.touches
-         const changed = event && event.changedTouches
-         return active && active.length ? active : changed && changed.length ? changed : event ? [event] : []
-      },
-      touchPoint(touch) {
-         const point = this.padPosition(touch)
-         return { id: point.id, x: Math.max(0, Math.round(point.x)), y: Math.max(0, Math.round(point.y)) }
-      },
-      touchFrame(event, ending) {
-         if (this.view !== "desktop" || !this.touchOn) return
-         const changed = (event && event.changedTouches) || []
-         const active = ending ? (event && event.touches) || [] : event && event.touches && event.touches.length ? event.touches : changed
-         const points = []
-         for (let index = 0; index < active.length; index++) {
-            const point = this.touchPoint(active[index])
-            point.phase = this.directTouches[point.id] ? 2 : 1
-            points.push(point)
-         }
-         if (ending) {
-            for (let index = 0; index < changed.length; index++) {
-               const point = this.touchPoint(changed[index])
-               if (!active.some((item) => (item.identifier === undefined ? 0 : item.identifier) === point.id)) {
-                  const previous = this.directTouches[point.id] || point
-                  points.push({ id: point.id, phase: 3, x: previous.x, y: previous.y })
-               }
-            }
-         }
-         if (!points.length) return
-         control(this.touchPacket(points), true)
-         points.forEach((point) => {
-            if (point.phase === 3) delete this.directTouches[point.id]
-            else this.directTouches[point.id] = point
-         })
-         if (Object.keys(this.directTouches).length) this.touchKeep()
-         else this.touchRelease()
-      },
-      touchPacket(points) {
-         const packet = [0x2a, points.length]
-         points.forEach((point) => packet.push(point.id, point.phase, point.x >> 8, point.x, point.y >> 8, point.y))
-         return packet
-      },
-      touchKeep() {
-         if (this.touchTimer !== null) return
-         const keep = () => {
-            this.touchTimer = null
-            const points = Object.keys(this.directTouches).map((id) => {
-               const point = this.directTouches[id]
-               return { id: Number(id), phase: 2, x: point.x, y: point.y }
-            })
-            if (!points.length) return
-            control(this.touchPacket(points), true)
-            this.touchTimer = setTimeout(keep, 300)
-         }
-         this.touchTimer = setTimeout(keep, 300)
-      },
-      touchRelease() {
-         if (this.touchTimer !== null) {
-            clearTimeout(this.touchTimer)
-            this.touchTimer = null
-         }
-         const points = Object.keys(this.directTouches).map((id) => {
-            const point = this.directTouches[id]
-            return { id: Number(id), phase: 3, x: point.x, y: point.y }
-         })
-         this.directTouches = {}
-         if (!points.length) return
-         control(this.touchPacket(points), true)
-      },
-      padPosition(touch) {
-         return { id: touch.identifier === undefined ? 0 : touch.identifier, x: touch.pageX === undefined ? (touch.clientX === undefined ? (touch.screenX === undefined ? touch.x || 0 : touch.screenX) : touch.clientX) : touch.pageX, y: touch.pageY === undefined ? (touch.clientY === undefined ? (touch.screenY === undefined ? touch.y || 0 : touch.screenY) : touch.clientY) : touch.pageY }
-      },
-      padPoint(touches, id) {
-         for (let index = 0; index < touches.length; index++) {
-            const point = this.padPosition(touches[index])
-            if (point.id === id) return point
-         }
-         return null
-      },
-      padFocus(touches) {
-         let x = 0
-         let y = 0
-         for (let index = 0; index < touches.length; index++) {
-            const point = this.padPosition(touches[index])
-            x += point.x
-            y += point.y
-         }
-         return { x: x / touches.length, y: y / touches.length }
-      },
-      padStart(event) {
-         if (this.view !== "keyboard" || !this.mouseOn) return
-         const touches = this.padTouches(event)
-         const changed = (event && event.changedTouches) || touches
-         if (!changed.length) return
-         if (this.pad) {
-            const pad = this.pad
-            if (touches.length > 1 && pad.max < 2) {
-               pad.started = Date.now()
-               pad.moved = false
-               if (pad.dragging) {
-                  control(button(1, false), true)
-                  pad.dragging = false
-               }
-            }
-            pad.max = Math.max(pad.max, touches.length)
-            if (touches.length > 1) {
-               const point = this.padFocus(touches)
-               pad.x = pad.originX = point.x
-               pad.y = pad.originY = point.y
-               if (pad.press !== null) clearTimeout(pad.press)
-               pad.press = null
-            }
-            return
-         }
-         const point = this.padPosition(changed[0])
-         const pad = { id: point.id, x: point.x, y: point.y, originX: point.x, originY: point.y, started: Date.now(), max: touches.length || 1, moved: false, dragging: false, dx: 0, dy: 0, wheel: 0, press: null, timer: null }
-         this.pad = pad
-         pad.press = setTimeout(() => {
-            if (this.pad === pad && !pad.moved && pad.max === 1) {
-               pad.dragging = true
-               control(button(1, true), true)
-            }
-         }, 300)
-      },
-      padQueue(pad) {
-         if (pad.timer !== null) return
-         pad.timer = setTimeout(() => {
-            pad.timer = null
-            if (this.pad !== pad) return
-            const packet = this.padPacket(pad)
-            if (packet.length) control(packet)
-         }, 16)
-      },
-      padPacket(pad) {
-         const dx = pad.dx
-         const dy = pad.dy
-         const scroll = pad.wheel
-         pad.dx = pad.dy = pad.wheel = 0
-         const packet = dx || dy ? move(dy * mouseSensitivityY, -dx * mouseSensitivityX) : []
-         if (scroll) packet.push(...wheel(scroll))
-         return packet
-      },
-      padMove(event) {
-         const pad = this.pad
-         const touches = this.padTouches(event)
-         if (!this.mouseOn || !pad || !touches.length) return
-         pad.max = Math.max(pad.max, touches.length)
-         const point = touches.length > 1 ? this.padFocus(touches) : this.padPoint(touches, pad.id)
-         if (!point) return
-         const dx = point.x - pad.x
-         const dy = point.y - pad.y
-         pad.x = point.x
-         pad.y = point.y
-         if (!dx && !dy) return
-         const wasMoved = pad.moved
-         const travel = touchDistance(point.x - pad.originX, point.y - pad.originY)
-         if (!pad.moved && (touches.length > 1 ? travel >= gestureThreshold : travel > 3)) {
-            pad.moved = true
-            if (pad.press !== null) clearTimeout(pad.press)
-            pad.press = null
-         }
-         if (touches.length > 1) {
-            if (pad.moved) {
-               pad.wheel += (wasMoved ? dy : point.y - pad.originY) * 8
-               this.padQueue(pad)
-            }
-         } else {
-            pad.dx += dx
-            pad.dy += dy
-            this.padQueue(pad)
-         }
-      },
-      finishPad(click) {
-         const pad = this.pad
-         if (!pad) return
-         this.pad = null
-         if (pad.press !== null) clearTimeout(pad.press)
-         if (pad.timer !== null) clearTimeout(pad.timer)
-         const packet = this.padPacket(pad)
-         if (pad.dragging) packet.push(...button(1, false))
-         else if (click && !pad.moved && Date.now() - pad.started < 300) packet.push(...button(pad.max > 1 ? 2 : 1, true), ...button(pad.max > 1 ? 2 : 1, false))
-         if (packet.length) {
-            control(packet, pad.dragging || (click && !pad.moved))
-         }
-      },
-      padEnd(event) {
-         const pad = this.pad
-         if (!pad) return
-         const touches = (event && event.touches) || []
-         const point = this.padPoint(touches, pad.id)
-         if (point) {
-            pad.x = point.x
-            pad.y = point.y
-            return
-         }
-         this.finishPad(true)
-      },
       keyPoints(event) {
          const changed = event && event.changedTouches
          return changed && changed.length ? changed : event ? [event] : []
@@ -542,7 +339,7 @@ const script = {
       },
       keyStart(entry, event) {
          this.keyPoints(event).forEach((point) => {
-            const id = this.padPosition(point).id
+            const id = point.identifier === undefined ? 0 : point.identifier
             if (this.held.some((held) => held.id === id)) return
             const held = { id, entry, timer: null }
             this.held.push(held)
@@ -568,7 +365,7 @@ const script = {
       },
       keyEnd(event) {
          this.keyPoints(event).forEach((point) => {
-            const id = this.padPosition(point).id
+            const id = point.identifier === undefined ? 0 : point.identifier
             const index = this.held.findIndex((held) => held.id === id)
             if (index < 0) return
             const held = this.held[index]
@@ -602,10 +399,8 @@ const style = {
       deviceEntryActive: { backgroundColor: "#3474F0" },
       deviceEntryText: { color: "#e6e1e5", fontSize: 18, lineHeight: "27px" },
       keyboard: { position: "absolute", bottom: 0, left: 0, width: "100%", height: "100%" },
-      keyArea: { position: "absolute", top: 0, left: "13.5%", width: "73%", height: "100%", flexDirection: "column" },
-      touchPad: { position: "absolute", top: 0, width: "13.5%", height: "100%", backgroundColor: "transparent" },
-      touchPadLeft: { left: 0 },
-      touchPadRight: { right: 0 },
+      keyArea: { position: "absolute", top: 0, left: 0, width: "73%", height: "100%", flexDirection: "column" },
+      touchPad: { position: "absolute", top: 0, right: 0, width: "27%", height: "100%", backgroundColor: "transparent" },
       keyRow: { flex: 1, position: "relative" },
       button: { position: "absolute", top: 0, height: "100%", margin: 0, alignItems: "center", justifyContent: "center" },
       label: { color: "#77767b", opacity: 0.6, fontSize: 18, textAlign: "center" },
@@ -642,9 +437,8 @@ const style = {
 const render = function () {
    const create = this.$createElement
    const text = (value, classes, style) => create("text", { staticClass: ["font"].concat(classes), style, attrs: { value } })
-   const touchEvents = { touchstart: (event) => this.touchFrame(event, false), touchmove: (event) => this.touchFrame(event, false), touchend: (event) => this.touchFrame(event, true), touchcancel: (event) => this.touchFrame(event, false) }
    const remoteFrame = (classes) => (this.screenOn ? create("video", { staticClass: classes, ref: "remote", attrs: { src: "http://127.0.0.1:999/native", enable_audio: false, playbin3: true }, on: { error: () => this.videoError(), completed: () => this.videoError() } }) : create("div", { staticClass: classes }))
-   const touchSurface = () => (this.touchOn ? create("div", { staticClass: ["touchSurface"], on: touchEvents }) : null)
+   const touchSurface = () => (this.touchOn ? create("div", { staticClass: ["touchSurface"] }) : null)
    const icon = (value, classes) => create("div", { staticClass: classes, style: { backgroundImage: "url(" + value + ")", backgroundSize: "contain", backgroundRepeat: "no-repeat", backgroundPosition: "center" } })
    const keyButton = (entry) => {
       var value = entry.label || ""
@@ -697,13 +491,12 @@ const render = function () {
       return create("div", { key: "keyboard", staticClass: ["root"] }, [
          remoteFrame(["desktop"]),
          create("div", { staticClass: ["keyboard"] }, [
-            create("div", { staticClass: ["touchPad", "touchPadLeft"], on: { touchstart: (event) => this.padStart(event), touchmove: (event) => this.padMove(event), touchend: (event) => this.padEnd(event), touchcancel: () => this.finishPad(false) } }),
             create(
                "div",
                { staticClass: ["keyArea"] },
                keyRows.map((row) => create("div", { staticClass: ["keyRow"] }, row.map(keyButton)))
             ),
-            create("div", { staticClass: ["touchPad", "touchPadRight"], on: { touchstart: (event) => this.padStart(event), touchmove: (event) => this.padMove(event), touchend: (event) => this.padEnd(event), touchcancel: () => this.finishPad(false) } })
+            create("div", { staticClass: ["touchPad"] })
          ])
       ])
    }
