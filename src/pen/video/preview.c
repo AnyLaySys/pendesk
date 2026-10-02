@@ -2,6 +2,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "preview.h"
+#include "frames.h"
 #include "files.h"
 #include "io.h"
 #include "stream.h"
@@ -210,9 +211,7 @@ int preview_open(struct preview *preview, const struct cfg *cfg) {
     return 0;
 }
 
-int preview_publish(struct preview *preview, const uint8_t *data, size_t length, uint64_t timestamp,
-                    bool keyframe) {
-    int result = 0;
+void preview_publish(struct preview *preview, struct video_frame *source) {
     pthread_mutex_lock(&preview->mutex);
     if (!preview->connected) goto done;
     if (preview->count == 4) {
@@ -220,27 +219,18 @@ int preview_publish(struct preview *preview, const uint8_t *data, size_t length,
         preview->waiting = true;
         atomic_store(&preview->keyframe, true);
     }
-    if (preview->waiting && !keyframe) goto done;
+    if (preview->waiting && !source->keyframe) goto done;
     preview->waiting = false;
     struct preview_frame *frame = &preview->queue[(preview->head + preview->count) % 4];
-    if (frame->capacity < length) {
-        uint8_t *replacement = realloc(frame->data, length);
-        if (!replacement) {
-            result = -1;
-            goto done;
-        }
-        frame->data = replacement;
-        frame->capacity = length;
-    }
-    memcpy(frame->data, data, length);
-    frame->length = length;
-    frame->timestamp = timestamp;
-    frame->keyframe = keyframe;
+    struct preview_frame spare = *frame;
+    *frame = (struct preview_frame) {.data = source->data, .capacity = source->capacity,
+        .length = source->length, .timestamp = source->timestamp, .keyframe = source->keyframe};
+    source->data = spare.data;
+    source->capacity = spare.capacity;
     ++preview->count;
     done:
     pthread_mutex_unlock(&preview->mutex);
     notify(preview);
-    return result;
 }
 
 void preview_close(struct preview *preview) {

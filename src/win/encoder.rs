@@ -179,8 +179,12 @@ impl H264 {
         }
     }
 
-    pub fn encode(&mut self, frame: &Frame, keyframe: bool, output: &mut Vec<u8>) -> Result<()> {
-        output.clear();
+    pub fn encode(
+        &mut self,
+        frame: &Frame,
+        keyframe: bool,
+        mut output: impl FnMut(&[u8]),
+    ) -> Result<()> {
         let deadline = Instant::now() + Duration::from_secs(2);
         let mut submitted = false;
         unsafe {
@@ -219,11 +223,10 @@ impl H264 {
                         if kind == METransformNeedInput.0 as u32 {
                             self.ready = true;
                         }
-                        if kind == METransformHaveOutput.0 as u32 {
-                            self.read_output(output)?;
-                            if !output.is_empty() {
-                                return Ok(());
-                            }
+                        if kind == METransformHaveOutput.0 as u32
+                            && self.read_output(&mut output)?
+                        {
+                            return Ok(());
                         }
                     }
                     Ok(Err(error)) => return Err(error.into()),
@@ -238,7 +241,7 @@ impl H264 {
         }
     }
 
-    fn read_output(&self, output: &mut Vec<u8>) -> Result<()> {
+    fn read_output(&self, output: &mut impl FnMut(&[u8])) -> Result<bool> {
         unsafe {
             let info = self.output_info;
             let sample = if info.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 as u32 == 0 {
@@ -263,10 +266,13 @@ impl H264 {
                 let mut bytes = std::ptr::null_mut();
                 let mut length = 0;
                 buffer.Lock(&mut bytes, None, Some(&mut length))?;
-                output.extend_from_slice(std::slice::from_raw_parts(bytes, length as usize));
+                if length > 0 {
+                    output(std::slice::from_raw_parts(bytes, length as usize));
+                }
                 buffer.Unlock()?;
+                return Ok(length > 0);
             }
-            Ok(())
+            Ok(false)
         }
     }
 }
@@ -312,24 +318,24 @@ mod tests {
         let mut screen = Screen::new(&gpu, video, &mut viewport, &signal).unwrap();
         let mut encoder = H264::new(&gpu, screen.dimensions.0, screen.dimensions.1).unwrap();
         let mut stream = Vec::new();
-        let mut output = Vec::new();
         let start = Instant::now();
         let mut count = 0;
         while count < 120 {
             if let Some(frame) = screen.capture(viewport.capture_source()).unwrap() {
                 encoder
-                    .encode(&frame, count == 0 || count == 37, &mut output)
+                    .encode(&frame, count == 0 || count == 37, |output| {
+                        assert!(!output.is_empty());
+                        if count == 0 || count == 37 {
+                            assert!(
+                                output
+                                    .windows(4)
+                                    .any(|v| v[..3] == [0, 0, 1] && v[3] & 31 == 5)
+                            );
+                        }
+                        stream.extend_from_slice(output);
+                        count += 1;
+                    })
                     .unwrap();
-                assert!(!output.is_empty());
-                if count == 0 || count == 37 {
-                    assert!(
-                        output
-                            .windows(4)
-                            .any(|v| v[..3] == [0, 0, 1] && v[3] & 31 == 5)
-                    );
-                }
-                stream.extend_from_slice(&output);
-                count += 1;
             } else {
                 assert!(start.elapsed() < Duration::from_secs(10));
                 std::thread::sleep(Duration::from_millis(10));

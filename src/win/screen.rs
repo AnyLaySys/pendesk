@@ -5,26 +5,23 @@ use crate::viewport::{Bounds, Viewport};
 use std::sync::Arc;
 use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::{
-    Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession,
+    Direct3D11CaptureFrame, Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession,
 };
 use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
 use windows::Graphics::DirectX::DirectXPixelFormat;
 use windows::Win32::Foundation::{POINT, RECT};
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_TEX2D_VPIV, D3D11_TEX2D_VPOV,
-    D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
-    D3D11_VIDEO_PROCESSOR_COLOR_SPACE, D3D11_VIDEO_PROCESSOR_CONTENT_DESC,
-    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0,
-    D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0,
-    D3D11_VIDEO_PROCESSOR_ROTATION_270, D3D11_VIDEO_PROCESSOR_STREAM,
-    D3D11_VIDEO_USAGE_PLAYBACK_NORMAL, D3D11_VPIV_DIMENSION_TEXTURE2D,
-    D3D11_VPOV_DIMENSION_TEXTURE2D, ID3D11DeviceContext, ID3D11Texture2D, ID3D11VideoContext,
-    ID3D11VideoDevice, ID3D11VideoProcessor, ID3D11VideoProcessorInputView,
-    ID3D11VideoProcessorOutputView,
+    D3D11_BIND_RENDER_TARGET, D3D11_TEX2D_VPIV, D3D11_TEX2D_VPOV, D3D11_TEXTURE2D_DESC,
+    D3D11_USAGE_DEFAULT, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE, D3D11_VIDEO_PROCESSOR_COLOR_SPACE,
+    D3D11_VIDEO_PROCESSOR_CONTENT_DESC, D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC,
+    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0, D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC,
+    D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0, D3D11_VIDEO_PROCESSOR_ROTATION_270,
+    D3D11_VIDEO_PROCESSOR_STREAM, D3D11_VIDEO_USAGE_PLAYBACK_NORMAL,
+    D3D11_VPIV_DIMENSION_TEXTURE2D, D3D11_VPOV_DIMENSION_TEXTURE2D, ID3D11Texture2D,
+    ID3D11VideoContext, ID3D11VideoDevice, ID3D11VideoProcessor, ID3D11VideoProcessorEnumerator,
+    ID3D11VideoProcessorInputView, ID3D11VideoProcessorOutputView,
 };
-use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_NV12, DXGI_RATIONAL, DXGI_SAMPLE_DESC,
-};
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_NV12, DXGI_RATIONAL, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTOPRIMARY, MonitorFromPoint};
 use windows::Win32::System::WinRT::Direct3D11::{
     CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
@@ -33,17 +30,16 @@ use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemIntero
 use windows::core::{Interface, factory};
 pub struct Screen {
     bounds: Bounds,
-    context: ID3D11DeviceContext,
-    input_view: ID3D11VideoProcessorInputView,
+    enumerator: ID3D11VideoProcessorEnumerator,
     output_view: ID3D11VideoProcessorOutputView,
     pool: Direct3D11CaptureFramePool,
     processor: ID3D11VideoProcessor,
     session: GraphicsCaptureSession,
-    source: ID3D11Texture2D,
+    source: Option<(Direct3D11CaptureFrame, ID3D11VideoProcessorInputView)>,
     target: ID3D11Texture2D,
-    have_frame: bool,
     token: i64,
     video_context: ID3D11VideoContext,
+    video_device: ID3D11VideoDevice,
     pub view: View,
     pub dimensions: (u32, u32),
 }
@@ -91,20 +87,7 @@ impl Screen {
             let session = pool.CreateCaptureSession(&item)?;
             let _ = session.SetIsCursorCaptureEnabled(true);
             let _ = session.SetIsBorderRequired(false);
-            let source = Self::texture(
-                gpu,
-                size.Width as u32,
-                size.Height as u32,
-                DXGI_FORMAT_B8G8R8A8_UNORM,
-                (D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET).0 as u32,
-            )?;
-            let target = Self::texture(
-                gpu,
-                u32::from(canvas.width),
-                u32::from(canvas.height),
-                DXGI_FORMAT_NV12,
-                D3D11_BIND_RENDER_TARGET.0 as u32,
-            )?;
+            let target = Self::texture(gpu, u32::from(canvas.width), u32::from(canvas.height))?;
             let video_device: ID3D11VideoDevice = gpu.device.cast()?;
             let video_context: ID3D11VideoContext = gpu.context.cast()?;
             let content = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
@@ -131,22 +114,6 @@ impl Screen {
                 true,
                 D3D11_VIDEO_PROCESSOR_ROTATION_270,
             );
-            let mut input_view = None;
-            video_device.CreateVideoProcessorInputView(
-                &source,
-                &enumerator,
-                &D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC {
-                    FourCC: 0,
-                    ViewDimension: D3D11_VPIV_DIMENSION_TEXTURE2D,
-                    Anonymous: D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0 {
-                        Texture2D: D3D11_TEX2D_VPIV {
-                            MipSlice: 0,
-                            ArraySlice: 0,
-                        },
-                    },
-                },
-                Some(&mut input_view),
-            )?;
             let mut output_view = None;
             video_device.CreateVideoProcessorOutputView(
                 &target,
@@ -176,17 +143,16 @@ impl Screen {
             session.StartCapture()?;
             Ok(Self {
                 bounds,
-                context: gpu.context.clone(),
-                input_view: input_view.unwrap(),
+                enumerator,
                 output_view: output_view.unwrap(),
                 pool,
                 processor,
                 session,
-                source,
+                source: None,
                 target,
-                have_frame: false,
                 token,
                 video_context,
+                video_device,
                 dimensions: (u32::from(canvas.width), u32::from(canvas.height)),
                 view: View {
                     height: video.height,
@@ -197,25 +163,19 @@ impl Screen {
             })
         }
     }
-    fn texture(
-        gpu: &Gpu,
-        width: u32,
-        height: u32,
-        format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT,
-        bind: u32,
-    ) -> windows::core::Result<ID3D11Texture2D> {
+    fn texture(gpu: &Gpu, width: u32, height: u32) -> windows::core::Result<ID3D11Texture2D> {
         let desc = D3D11_TEXTURE2D_DESC {
             Width: width,
             Height: height,
             MipLevels: 1,
             ArraySize: 1,
-            Format: format,
+            Format: DXGI_FORMAT_NV12,
             SampleDesc: DXGI_SAMPLE_DESC {
                 Count: 1,
                 Quality: 0,
             },
             Usage: D3D11_USAGE_DEFAULT,
-            BindFlags: bind,
+            BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
             CPUAccessFlags: 0,
             MiscFlags: 0,
         };
@@ -234,23 +194,23 @@ impl Screen {
         (x, y, width, height): (i32, i32, i32, i32),
     ) -> Result<Option<Frame<'_>>, String> {
         self.acquire().map_err(|error| error.to_string())?;
-        if !self.have_frame {
+        let Some((_, input_view)) = &self.source else {
             return Ok(None);
-        }
+        };
         let rect = RECT {
             left: x - self.bounds.left,
             top: y - self.bounds.top,
             right: x - self.bounds.left + width,
             bottom: y - self.bounds.top + height,
         };
-        let stream = D3D11_VIDEO_PROCESSOR_STREAM {
+        let mut stream = D3D11_VIDEO_PROCESSOR_STREAM {
             Enable: true.into(),
             OutputIndex: 0,
             InputFrameOrField: 0,
             PastFrames: 0,
             FutureFrames: 0,
             ppPastSurfaces: std::ptr::null_mut(),
-            pInputSurface: std::mem::ManuallyDrop::new(Some(self.input_view.clone())),
+            pInputSurface: std::mem::ManuallyDrop::new(Some(input_view.clone())),
             ppFutureSurfaces: std::ptr::null_mut(),
             ppPastSurfacesRight: std::ptr::null_mut(),
             pInputSurfaceRight: std::mem::ManuallyDrop::new(None),
@@ -263,26 +223,51 @@ impl Screen {
                 true,
                 Some(&rect),
             );
-            self.video_context
-                .VideoProcessorBlt(&self.processor, &self.output_view, 0, &[stream])
-                .map_err(|error| error.to_string())?;
+            let result = self.video_context.VideoProcessorBlt(
+                &self.processor,
+                &self.output_view,
+                0,
+                std::slice::from_ref(&stream),
+            );
+            std::mem::ManuallyDrop::drop(&mut stream.pInputSurface);
+            result.map_err(|error| error.to_string())?;
         }
         Ok(Some(Frame {
             texture: &self.target,
         }))
     }
     fn acquire(&mut self) -> windows::core::Result<()> {
-        let mut latest = None;
+        let mut latest: Option<Direct3D11CaptureFrame> = None;
         while let Ok(frame) = self.pool.TryGetNextFrame() {
-            latest = Some(frame);
+            if let Some(previous) = latest.replace(frame) {
+                previous.Close()?;
+            }
         }
         if let Some(frame) = latest {
             let surface = frame.Surface()?;
             let access: IDirect3DDxgiInterfaceAccess = surface.cast()?;
             let texture: ID3D11Texture2D = unsafe { access.GetInterface()? };
-            unsafe { self.context.CopyResource(&self.source, &texture) };
-            frame.Close()?;
-            self.have_frame = true;
+            let mut input_view = None;
+            unsafe {
+                self.video_device.CreateVideoProcessorInputView(
+                    &texture,
+                    &self.enumerator,
+                    &D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC {
+                        FourCC: 0,
+                        ViewDimension: D3D11_VPIV_DIMENSION_TEXTURE2D,
+                        Anonymous: D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0 {
+                            Texture2D: D3D11_TEX2D_VPIV {
+                                MipSlice: 0,
+                                ArraySlice: 0,
+                            },
+                        },
+                    },
+                    Some(&mut input_view),
+                )?;
+            }
+            if let Some((previous, _)) = self.source.replace((frame, input_view.unwrap())) {
+                previous.Close()?;
+            }
         }
         Ok(())
     }
@@ -291,6 +276,9 @@ impl Drop for Screen {
     fn drop(&mut self) {
         let _ = self.session.Close();
         let _ = self.pool.RemoveFrameArrived(self.token);
+        if let Some((frame, _)) = self.source.take() {
+            let _ = frame.Close();
+        }
         let _ = self.pool.Close();
     }
 }

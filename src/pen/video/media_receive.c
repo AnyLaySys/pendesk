@@ -52,10 +52,7 @@ int media_receive(struct input_state *input, struct preview *preview, struct vid
             return -1;
         struct video_frame *frame;
         while ((frame = frames_next(&video->frames, now))) {
-            if (configured && !input_paused(input) &&
-                preview_publish(preview, frame->data, frame->length, frame->timestamp,
-                                frame->keyframe) != 0)
-                return -1;
+            if (configured && !input_paused(input)) preview_publish(preview, frame);
         }
         if (length < 0) break;
     }

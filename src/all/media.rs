@@ -1,8 +1,13 @@
 use crate::all::protocol;
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
+use std::os::windows::io::AsRawSocket;
 use std::thread;
 use std::time::{Duration, Instant};
+use windows::Win32::Networking::WinSock::{
+    AF_INET, IN_ADDR, IN_ADDR_0, SOCKADDR_IN, SOCKET, WSABUF, WSASendTo,
+};
+use windows::core::PSTR;
 
 const VIDEO_HELLO: [u8; 4] = *b"PDSU";
 const VIDEO_ACK: [u8; 4] = *b"PDSH";
@@ -63,6 +68,44 @@ pub fn send_video_frame(
     timestamp: u64,
     frame: &[u8],
 ) {
+    let SocketAddr::V4(address) = peer.address else {
+        return;
+    };
+    let address = SOCKADDR_IN {
+        sin_family: AF_INET,
+        sin_port: address.port().to_be(),
+        sin_addr: IN_ADDR {
+            S_un: IN_ADDR_0 {
+                S_addr: u32::from_ne_bytes(address.ip().octets()),
+            },
+        },
+        ..Default::default()
+    };
+    let socket = SOCKET(socket.as_raw_socket() as usize);
+    let send = |header: &[u8], payload: &[u8]| unsafe {
+        let buffers = [
+            WSABUF {
+                len: header.len() as u32,
+                buf: PSTR(header.as_ptr().cast_mut()),
+            },
+            WSABUF {
+                len: payload.len() as u32,
+                buf: PSTR(payload.as_ptr().cast_mut()),
+            },
+        ];
+        let mut sent = 0;
+        WSASendTo(
+            socket,
+            &buffers,
+            Some(&mut sent),
+            0,
+            Some((&address as *const SOCKADDR_IN).cast()),
+            std::mem::size_of_val(&address) as i32,
+            None,
+            None,
+        ) == 0
+            && sent as usize == header.len() + payload.len()
+    };
     let Ok(length) = u32::try_from(frame.len()) else {
         return;
     };
@@ -71,7 +114,7 @@ pub fn send_video_frame(
         return;
     }
     let fragments = fragments as u16;
-    let mut packet = [0; VIDEO_HEADER + VIDEO_PAYLOAD];
+    let mut packet = [0; VIDEO_HEADER];
     packet[4] = protocol::VERSION;
     packet[5..13].copy_from_slice(&peer.nonce);
     packet[13..17].copy_from_slice(&sequence.to_be_bytes());
@@ -95,20 +138,15 @@ pub fn send_video_frame(
         for (accumulator, value) in parity.iter_mut().zip(&frame[start..end]) {
             *accumulator ^= *value;
         }
-        packet[VIDEO_HEADER..VIDEO_HEADER + end - start].copy_from_slice(&frame[start..end]);
-        if socket
-            .send_to(&packet[..VIDEO_HEADER + end - start], peer.address)
-            .is_err()
-        {
+        if !send(&packet, &frame[start..end]) {
             return;
         }
         if index % 8 == 7 || index + 1 == fragments {
             packet[..4].copy_from_slice(b"PDSF");
             packet[17..19].copy_from_slice(&(index / 8 * 8).to_be_bytes());
-            packet[VIDEO_HEADER..].copy_from_slice(&parity);
             let length =
                 (frame.len() - usize::from(index / 8 * 8) * VIDEO_PAYLOAD).min(VIDEO_PAYLOAD);
-            let _ = socket.send_to(&packet[..VIDEO_HEADER + length], peer.address);
+            let _ = send(&packet, &parity[..length]);
             parity.fill(0);
         }
     }

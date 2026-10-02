@@ -15,7 +15,13 @@
 
 struct source {
     GWeakRef element;
-    GByteArray *bytes;
+    GQueue buffers;
+    GstBuffer *buffer;
+    GstMapInfo map;
+    struct stream_packet packet;
+    size_t received;
+    size_t bytes;
+    uint64_t newest;
     int fd;
     gint64 retry;
     guint64 first;
@@ -192,11 +198,60 @@ static void repaint(GstElement *element) {
     gst_object_unref(pad);
 }
 
+static void clear_source(struct source *source) {
+    if (source->buffer) {
+        gst_buffer_unmap(source->buffer, &source->map);
+        gst_buffer_unref(source->buffer);
+        source->buffer = NULL;
+    }
+    g_queue_clear_full(&source->buffers, (GDestroyNotify)gst_buffer_unref);
+    source->received = source->bytes = 0;
+    source->newest = 0;
+}
+
+static int receive_source(struct source *source) {
+    for (;;) {
+        gboolean header = source->received < sizeof(source->packet);
+        uint8_t *target = header ? (uint8_t *)&source->packet : source->map.data;
+        size_t offset = header ? source->received : source->received - sizeof(source->packet);
+        size_t length = header ? sizeof(source->packet) : source->packet.length;
+        ssize_t count = recv(source->fd, target + offset, length - offset, MSG_DONTWAIT);
+        if (count < 0) {
+            if (errno == EINTR) continue;
+            return errno == EAGAIN || errno == EWOULDBLOCK ? 0 : -1;
+        }
+        if (!count) return -1;
+        source->received += (size_t)count;
+        if (header && source->received == sizeof(source->packet)) {
+            if (!source->packet.length || source->packet.length > MAX_FRAME ||
+                source->bytes + sizeof(source->packet) + source->packet.length > MAX_FRAME * 2)
+                return -1;
+            GstBuffer *buffer = gst_buffer_new_allocate(NULL, source->packet.length, NULL);
+            if (!buffer) return -1;
+            if (!gst_buffer_map(buffer, &source->map, GST_MAP_WRITE)) {
+                gst_buffer_unref(buffer);
+                return -1;
+            }
+            source->buffer = buffer;
+            source->bytes += sizeof(source->packet) + source->packet.length;
+            source->newest = source->packet.timestamp;
+            GST_BUFFER_PTS(buffer) = source->packet.timestamp;
+            if (!source->packet.keyframe) GST_BUFFER_FLAG_SET(buffer, GST_BUFFER_FLAG_DELTA_UNIT);
+        }
+        if (!header && source->received == sizeof(source->packet) + source->packet.length) {
+            gst_buffer_unmap(source->buffer, &source->map);
+            g_queue_push_tail(&source->buffers, source->buffer);
+            source->buffer = NULL;
+            source->received = 0;
+        }
+    }
+}
+
 static void release_source(gpointer data) {
     struct source *source = data;
     if (source->fd >= 0) close(source->fd);
     g_weak_ref_clear(&source->element);
-    g_byte_array_unref(source->bytes);
+    clear_source(source);
     g_free(source);
 }
 
@@ -208,7 +263,7 @@ static gboolean feed(gpointer data) {
         if (source->fd >= 0) close(source->fd);
         source->fd = -1;
         source->started = FALSE;
-        g_byte_array_set_size(source->bytes, 0);
+        clear_source(source);
         goto done;
     }
     if (source->fd < 0) {
@@ -228,60 +283,40 @@ static gboolean feed(gpointer data) {
     guint64 queued = 0;
     g_object_get(element, "current-level-buffers", &queued, NULL);
     if (queued < 2) {
-        uint8_t bytes[65536];
-        ssize_t count;
-        while ((count = recv(source->fd, bytes, sizeof(bytes), MSG_DONTWAIT)) > 0) {
-            if (source->bytes->len + count > MAX_FRAME * 2) goto ended;
-            g_byte_array_append(source->bytes, bytes, (guint)count);
-        }
-        if (!count || (count < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) goto ended;
-        uint64_t newest = 0;
-        for (size_t offset = 0; offset + sizeof(struct stream_packet) <= source->bytes->len;) {
-            struct stream_packet packet;
-            memcpy(&packet, source->bytes->data + offset, sizeof(packet));
-            if (!packet.length || packet.length > MAX_FRAME) goto ended;
-            newest = packet.timestamp;
-            offset += sizeof(packet) + packet.length;
-        }
-        while (source->bytes->len >= sizeof(struct stream_packet)) {
-            struct stream_packet packet;
-            memcpy(&packet, source->bytes->data, sizeof(packet));
-            if (!packet.length || packet.length > MAX_FRAME) goto ended;
-            size_t size = sizeof(packet) + packet.length;
-            if (source->bytes->len < size) break;
+        if (receive_source(source) != 0) goto ended;
+        GstBuffer *buffer;
+        while ((buffer = g_queue_pop_head(&source->buffers))) {
+            source->bytes -= sizeof(source->packet) + gst_buffer_get_size(buffer);
+            uint64_t timestamp = GST_BUFFER_PTS(buffer);
+            gboolean keyframe = !GST_BUFFER_FLAG_IS_SET(buffer, GST_BUFFER_FLAG_DELTA_UNIT);
             GstClock *clock = gst_element_get_clock(element);
             GstClockTime now = clock ? gst_clock_get_time(clock) - gst_element_get_base_time(element) : 0;
             if (clock) gst_object_unref(clock);
-            GstClockTime pts = source->base + (packet.timestamp - source->first) * GST_MSECOND / 90;
+            GstClockTime pts = source->base + (timestamp - source->first) * GST_MSECOND / 90;
             if (source->started && now > pts + 80 * GST_MSECOND) source->waiting = TRUE;
-            gboolean old = newest > packet.timestamp + 4500;
+            gboolean old = source->newest > timestamp + 4500;
             if (old) source->waiting = TRUE;
-            if (source->waiting && (!packet.keyframe || old)) {
+            if (source->waiting && (!keyframe || old)) {
                 gint64 wall = g_get_monotonic_time();
                 if (wall - source->requested >= 100000) {
                     ssize_t sent = send(source->fd, "K", 1, MSG_DONTWAIT | MSG_NOSIGNAL);
                     (void)sent;
                     source->requested = wall;
                 }
-                g_byte_array_remove_range(source->bytes, 0, (guint)size);
+                gst_buffer_unref(buffer);
                 continue;
             }
             gboolean discontinuity = source->waiting;
             if (source->waiting) { source->started = FALSE; source->waiting = FALSE; }
             if (!source->started) {
                 source->base = now;
-                source->first = packet.timestamp;
+                source->first = timestamp;
                 source->started = TRUE;
             }
-            GstBuffer *buffer = gst_buffer_new_allocate(NULL, packet.length, NULL);
-            if (!buffer) goto ended;
-            gst_buffer_fill(buffer, 0, source->bytes->data + sizeof(packet), packet.length);
-            GST_BUFFER_PTS(buffer) = source->base + (packet.timestamp - source->first) * GST_MSECOND / 90;
+            GST_BUFFER_PTS(buffer) = source->base + (timestamp - source->first) * GST_MSECOND / 90;
             GST_BUFFER_DTS(buffer) = GST_BUFFER_PTS(buffer);
             GST_BUFFER_DURATION(buffer) = GST_SECOND / 60;
             if (discontinuity) GST_BUFFER_FLAG_SET(buffer, GST_BUFFER_FLAG_DISCONT);
-            if (!packet.keyframe) GST_BUFFER_FLAG_SET(buffer, GST_BUFFER_FLAG_DELTA_UNIT);
-            g_byte_array_remove_range(source->bytes, 0, (guint)size);
             if (gst_app_src_push_buffer(GST_APP_SRC(element), buffer) != GST_FLOW_OK) goto ended;
             if (++queued >= 2) break;
         }
@@ -447,7 +482,6 @@ static gboolean added(GSignalInvocationHint *hint, guint count, const GValue *va
                      "min-latency", (gint64)0, "max-latency", (gint64)0, NULL);
         struct source *source = g_new0(struct source, 1);
         source->fd = -1;
-        source->bytes = g_byte_array_new();
         g_weak_ref_init(&source->element, element);
         g_timeout_add_full(G_PRIORITY_DEFAULT, 2, feed, source, release_source);
         GstIterator *iterator = gst_bin_iterate_recurse(GST_BIN(root));

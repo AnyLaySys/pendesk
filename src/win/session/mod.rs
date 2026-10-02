@@ -77,7 +77,6 @@ pub fn run(
     );
     let interval = Duration::from_secs_f64(1.0 / f64::from(protocol::FPS));
     let keyframe = Duration::from_secs(5);
-    let mut frame = Vec::new();
     let mut sequence = 0u32;
     let started = Instant::now();
     let mut last_idr = started - keyframe;
@@ -158,15 +157,14 @@ pub fn run(
             }
             let keyframe = refresh.swap(false, Ordering::Relaxed) || last_idr.elapsed() >= keyframe;
             encoder
-                .encode(&captured, keyframe, &mut frame)
+                .encode(&captured, keyframe, |frame| {
+                    sequence = sequence.wrapping_add(1);
+                    let timestamp = now.duration_since(started).as_micros() as u64 * 9 / 100;
+                    transport::send_video_frame(video_socket, peer, sequence, timestamp, frame);
+                })
                 .map_err(|error| error.to_string())?;
             if keyframe {
                 last_idr = now;
-            }
-            if !frame.is_empty() {
-                sequence = sequence.wrapping_add(1);
-                let timestamp = now.duration_since(started).as_micros() as u64 * 9 / 100;
-                transport::send_video_frame(video_socket, peer, sequence, timestamp, &frame);
             }
         }
         Ok(())

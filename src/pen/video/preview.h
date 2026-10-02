@@ -17,6 +17,7 @@ struct preview_frame {
 };
 
 struct files;
+struct video_frame;
 struct preview {
     pthread_mutex_t mutex;
     struct preview_frame queue[4];
@@ -37,9 +38,7 @@ int preview_open(struct preview *preview, const struct cfg *cfg);
 
 void preview_close(struct preview *preview);
 
-int
-preview_publish(struct preview *preview, const uint8_t *frame, size_t length, uint64_t timestamp,
-                bool keyframe);
+void preview_publish(struct preview *preview, struct video_frame *frame);
 
 void preview_reset(struct preview *preview);
 
