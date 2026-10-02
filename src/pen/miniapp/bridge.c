@@ -1,7 +1,7 @@
 #define _GNU_SOURCE
-#include "../stream.h"
-#include "../protocol.h"
-#include "../pan.h"
+#include "../common/stream.h"
+#include "../common/protocol.h"
+#include "../common/pan.h"
 #include <gst/gst.h>
 #include <gst/app/gstappsrc.h>
 #include <gst/video/videooverlay.h>
@@ -107,6 +107,8 @@ static gboolean update_display(GstElement *element, gboolean cached, GstBuffer *
         gst_video_overlay_set_render_rectangle(GST_VIDEO_OVERLAY(element), 0, 0, display_width, display_height);
         return TRUE;
     }
+    GstVideoMeta *layout = gst_buffer_get_video_meta(buffer);
+    if (layout && (layout->width < height || layout->height < width)) return FALSE;
     gint64 now = g_get_monotonic_time();
     g_mutex_lock(&view_mutex);
     if (cached && (now < next_expose || now - last_video < 18000)) { g_mutex_unlock(&view_mutex); return FALSE; }
@@ -152,6 +154,11 @@ static gboolean update_display(GstElement *element, gboolean cached, GstBuffer *
         crop->y = (guint)top;
         crop->width = visible_height;
         crop->height = visible_width;
+        if (layout && width == visible_width && height == visible_height) {
+            crop->x = crop->y = 0;
+            crop->width = layout->width;
+            crop->height = layout->height;
+        }
     }
     gst_video_overlay_set_render_rectangle(GST_VIDEO_OVERLAY(element), 0, 0, display_width, display_height);
     atomic_store(&pan->rendered, position);

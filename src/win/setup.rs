@@ -154,7 +154,10 @@ fn login(serial: &str, app: &App, authkey: Option<&str>) -> Result<(), String> {
     )?;
     if status.contains("STATE:Running") {
         println!("Tailscale:Running");
-    } else if let Some(url) = status.lines().find_map(|line| line.strip_prefix("AUTH:").filter(|url| !url.is_empty())) {
+    } else if let Some(url) = status
+        .lines()
+        .find_map(|line| line.strip_prefix("AUTH:").filter(|url| !url.is_empty()))
+    {
         println!("前往 {url} 授权");
         println!("授权后自动重连");
     } else {
@@ -216,7 +219,13 @@ fn tailscale_path() -> Result<PathBuf, String> {
         .map(PathBuf::from)
         .map(|path| path.join("Tailscale").join("tailscale.exe"))
         .filter(|path| path.is_file())
-        .or_else(|| Command::new("tailscale").arg("--version").output().ok().map(|_| PathBuf::from("tailscale")))
+        .or_else(|| {
+            Command::new("tailscale")
+                .arg("--version")
+                .output()
+                .ok()
+                .map(|_| PathBuf::from("tailscale"))
+        })
         .ok_or_else(|| "Tailscale未安装".into())
 }
 
@@ -236,7 +245,11 @@ fn tailscale_running(path: &Path) -> bool {
         vec!["status".into(), "--json".into()],
         Duration::from_secs(5),
     )
-    .map(|output| String::from_utf8_lossy(&output.stdout).replace(' ', "").contains("\"BackendState\":\"Running\""))
+    .map(|output| {
+        String::from_utf8_lossy(&output.stdout)
+            .replace(' ', "")
+            .contains("\"BackendState\":\"Running\"")
+    })
     .unwrap_or(false)
 }
 
@@ -249,7 +262,11 @@ fn push(serial: &str, local: &Path, remote: &str) -> Result<(), String> {
         remote.into(),
     ])?;
     if output.status.success() {
-        print!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        print!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
         Ok(())
     } else {
         Err("ADB执行失败".into())
@@ -330,7 +347,11 @@ fn value(text: &str, key: &str) -> Option<String> {
 }
 
 fn config_path() -> PathBuf {
-    std::env::current_exe().unwrap().parent().unwrap().join("cfg/DevCfg")
+    std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("cfg/DevCfg")
 }
 
 fn sh_quote(value: &str) -> String {

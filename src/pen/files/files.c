@@ -1,7 +1,7 @@
 #define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 
-#include "files_internal.h"
+#include "internal.h"
 #include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -33,7 +33,7 @@ static int action_row(struct files *files, const char *text, bool open) {
     *end++ = '\0';
     if (!side(value, &pen) || !*end) return -1;
     row = strtoul(end, &end, 10);
-    return *end ? -1 : (open ? files_panel_open(files, pen, (size_t) row) : files_panel_select(
+    return *end ? -1 : (open ? panel_open(files, pen, (size_t) row) : panel_select(
             files, pen, (size_t) row));
 }
 

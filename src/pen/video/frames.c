@@ -1,4 +1,4 @@
-#include "video_frames.h"
+#include "frames.h"
 #include "bytes.h"
 #include <stdlib.h>
 #include <string.h>
@@ -12,7 +12,7 @@ static bool keyframe(const struct video_frame *frame) {
 }
 
 int
-video_frames_push(struct video_frames *frames, const uint8_t *packet, size_t length, uint64_t now) {
+frames_push(struct video_frames *frames, const uint8_t *packet, size_t length, uint64_t now) {
     if (length < VIDEO_HEADER) return 0;
     bool parity = !memcmp(packet, "PDSF", 4);
     if (!parity && memcmp(packet, "PDSV", 4)) return 0;
@@ -88,7 +88,7 @@ video_frames_push(struct video_frames *frames, const uint8_t *packet, size_t len
     return 0;
 }
 
-struct video_frame *video_frames_next(struct video_frames *frames, uint64_t now) {
+struct video_frame *frames_next(struct video_frames *frames, uint64_t now) {
     if (!frames->initialized) return NULL;
     for (unsigned int attempt = 0; attempt < 4; ++attempt) {
         struct video_frame *frame = &frames->slots[frames->next % 4];
@@ -118,7 +118,7 @@ struct video_frame *video_frames_next(struct video_frames *frames, uint64_t now)
     return NULL;
 }
 
-void video_frames_free(struct video_frames *frames) {
+void frames_free(struct video_frames *frames) {
     for (unsigned int i = 0; i < 4; ++i) free(frames->slots[i].data);
     memset(frames, 0, sizeof(*frames));
 }

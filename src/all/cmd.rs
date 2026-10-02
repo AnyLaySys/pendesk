@@ -1,6 +1,5 @@
 #[derive(Clone)]
 pub struct Config {
-    pub quality: u32,
     pub port: u16,
     pub token: [u8; 32],
 }
@@ -52,7 +51,6 @@ pub fn parse() -> Result<Command, String> {
 pub fn stored(text: &str) -> Result<Config, String> {
     let mut port = None;
     let mut pairing_token = None;
-    let mut quality = 45;
     for line in text.lines() {
         let Some((key, value)) = line.split_once('=') else {
             continue;
@@ -60,7 +58,6 @@ pub fn stored(text: &str) -> Result<Config, String> {
         match key.trim() {
             "port" => port = Some(number(value.trim(), "port")?),
             "token" => pairing_token = Some(token(value.trim())?),
-            "quality" => quality = number(value.trim(), "quality")?,
             _ => {}
         }
     }
@@ -68,25 +65,16 @@ pub fn stored(text: &str) -> Result<Config, String> {
     if port == 0 {
         return Err("DevCfg has an invalid port".into());
     }
-    if !(1..=100).contains(&quality) {
-        return Err("DevCfg quality must be from 1 to 100".into());
-    }
     Ok(Config {
-        quality,
         port,
         token: pairing_token.ok_or_else(|| "DevCfg has no token".to_string())?,
     })
 }
 fn parse_config(mut arguments: impl Iterator<Item = String>) -> Result<Config, String> {
-    let mut quality = 45;
     let mut port = 999;
     let mut pairing_token = None;
     while let Some(option) = arguments.next() {
         match option.as_str() {
-            "--fps" => {
-                if next(&mut arguments, "--fps")? != "60" { return Err("frame rate is fixed at 60 FPS".into()); }
-            }
-            "--quality" => quality = number(&next(&mut arguments, "--quality")?, "--quality")?,
             "--port" => port = number(&next(&mut arguments, "--port")?, "--port")?,
             "--token" => pairing_token = Some(token(&next(&mut arguments, "--token")?)?),
             "--help" | "-h" => return Err(usage()),
@@ -96,11 +84,7 @@ fn parse_config(mut arguments: impl Iterator<Item = String>) -> Result<Config, S
     if port == 0 {
         return Err("--port must be from 1 to 65535".into());
     }
-    if !(1..=100).contains(&quality) {
-        return Err("--quality must be from 1 to 100".into());
-    }
     Ok(Config {
-        quality,
         port,
         token: pairing_token.ok_or_else(|| "--token is required".to_string())?,
     })
@@ -172,5 +156,5 @@ fn nibble(value: u8) -> Option<u8> {
     }
 }
 pub fn usage() -> String {
-    "Usage: pendesk [--token <64-hex> [--port <1-65535>] [--quality <1-100>]]\n       pendesk install [--serial <device>]\n       pendesk configure [--host <Tailnet IPv4>] [--serial <device>] [--token <64-hex>] [--auth-key <key>]\n       pendesk restart|stop|+startup|-startup".into()
+    "Usage: pendesk [--token <64-hex> [--port <1-65535>]]\n       pendesk install [--serial <device>]\n       pendesk configure [--host <Tailnet IPv4>] [--serial <device>] [--token <64-hex>] [--auth-key <key>]\n       pendesk restart|stop|+startup|-startup".into()
 }

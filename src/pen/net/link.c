@@ -59,7 +59,7 @@ void link_close(struct link *link) {
 void link_video_close(struct video *video) {
     if (video->fd >= 0) close(video->fd);
     if (video->association >= 0) close(video->association);
-    video_frames_free(&video->frames);
+    frames_free(&video->frames);
     *video = (struct video) {.association = -1, .fd = -1};
 }
 

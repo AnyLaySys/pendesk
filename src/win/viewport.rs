@@ -77,47 +77,82 @@ impl Viewport {
         let (_, _, view_width, view_height) = self.capture();
         let canvas = self.canvas();
         let (view_width, view_height) = if canvas != self.video {
-            (f64::from(self.bounds.width - 1) * f64::from(self.video.height) / f64::from(canvas.height - 1),
-             f64::from(self.bounds.height - 1) * f64::from(self.video.width) / f64::from(canvas.width - 1))
-        } else { (f64::from(view_width), f64::from(view_height)) };
+            (
+                f64::from(self.bounds.width - 1) * f64::from(self.video.height)
+                    / f64::from(canvas.height - 1),
+                f64::from(self.bounds.height - 1) * f64::from(self.video.width)
+                    / f64::from(canvas.width - 1),
+            )
+        } else {
+            (f64::from(view_width), f64::from(view_height))
+        };
         let width = self.bounds.width.saturating_sub(1);
         let height = self.bounds.height.saturating_sub(1);
-        self.pointer_x = (self.pointer_x
-            - f64::from(delta_y) * view_width / f64::from(u16::MAX))
-        .clamp(0.0, f64::from(width));
-        self.pointer_y = (self.pointer_y
-            + f64::from(delta_x) * view_height / f64::from(u16::MAX))
-        .clamp(0.0, f64::from(height));
+        self.pointer_x = (self.pointer_x - f64::from(delta_y) * view_width / f64::from(u16::MAX))
+            .clamp(0.0, f64::from(width));
+        self.pointer_y = (self.pointer_y + f64::from(delta_x) * view_height / f64::from(u16::MAX))
+            .clamp(0.0, f64::from(height));
         self.follow_pointer();
         self.pointer()
     }
 
     pub fn canvas(&self) -> Video {
-        let height = (u64::from(self.bounds.height) * u64::from(self.video.height)
-            / u64::from(self.bounds.width)).div_ceil(2) * 2;
-        if self.zoom > 1.0001 || height <= u64::from(self.video.width) || height > 1080 || self.video.height > 1920 {
+        if self.zoom > 1.0001 {
             return self.video;
         }
-        Video { width: height as u16, height: self.video.height }
+        self.frame_size()
+    }
+
+    pub fn frame_size(&self) -> Video {
+        let height = (u64::from(self.bounds.height) * u64::from(self.video.height)
+            / u64::from(self.bounds.width))
+        .div_ceil(2)
+            * 2;
+        if height <= u64::from(self.video.width) || height > 1080 || self.video.height > 1920 {
+            return self.video;
+        }
+        Video {
+            width: height as u16,
+            height: self.video.height,
+        }
     }
 
     pub fn capture_source(&self) -> (i32, i32, i32, i32) {
         if self.canvas() != self.video {
-            (self.bounds.left, self.bounds.top, self.bounds.width as i32, self.bounds.height as i32)
-        } else { self.capture() }
+            (
+                self.bounds.left,
+                self.bounds.top,
+                self.bounds.width as i32,
+                self.bounds.height as i32,
+            )
+        } else {
+            self.capture()
+        }
     }
 
     pub fn origin(&self) -> (u16, u16) {
         let canvas = self.canvas();
-        if canvas == self.video { return (0, 0); }
+        if canvas == self.video {
+            return (0, 0);
+        }
         let (x, y, _, _) = self.capture();
-        (((x - self.bounds.left) as u64 * u64::from(canvas.height) / u64::from(self.bounds.width)) as u16,
-         ((y - self.bounds.top) as u64 * u64::from(canvas.width) / u64::from(self.bounds.height)) as u16)
+        (
+            ((x - self.bounds.left) as u64 * u64::from(canvas.height)
+                / u64::from(self.bounds.width)) as u16,
+            ((y - self.bounds.top) as u64 * u64::from(canvas.width) / u64::from(self.bounds.height))
+                as u16,
+        )
     }
 
     pub fn pointer(&self) -> (u16, u16) {
-        ((self.pointer_x * f64::from(u16::MAX) / f64::from(self.bounds.width.saturating_sub(1).max(1))).round() as u16,
-         (self.pointer_y * f64::from(u16::MAX) / f64::from(self.bounds.height.saturating_sub(1).max(1))).round() as u16)
+        (
+            (self.pointer_x * f64::from(u16::MAX)
+                / f64::from(self.bounds.width.saturating_sub(1).max(1)))
+            .round() as u16,
+            (self.pointer_y * f64::from(u16::MAX)
+                / f64::from(self.bounds.height.saturating_sub(1).max(1)))
+            .round() as u16,
+        )
     }
 
     pub fn advance(&mut self, now: Instant) {
@@ -155,8 +190,16 @@ impl Viewport {
     pub fn touch_point(&self, x: u16, y: u16) -> (i32, i32) {
         let canvas = self.canvas();
         if canvas != self.video {
-            return (self.bounds.left + (u32::from(x).min(u32::from(canvas.height - 1)) * self.bounds.width.saturating_sub(1) / u32::from(canvas.height - 1)) as i32,
-                    self.bounds.top + (u32::from(y).min(u32::from(canvas.width - 1)) * self.bounds.height.saturating_sub(1) / u32::from(canvas.width - 1)) as i32);
+            return (
+                self.bounds.left
+                    + (u32::from(x).min(u32::from(canvas.height - 1))
+                        * self.bounds.width.saturating_sub(1)
+                        / u32::from(canvas.height - 1)) as i32,
+                self.bounds.top
+                    + (u32::from(y).min(u32::from(canvas.width - 1))
+                        * self.bounds.height.saturating_sub(1)
+                        / u32::from(canvas.width - 1)) as i32,
+            );
         }
         let (left, top, width, height) = self.capture();
         let max_x = u32::from(self.video.height.saturating_sub(1));

@@ -36,7 +36,7 @@ receive_packet(struct video *video, const struct cfg *cfg, const struct input_st
     if (payload_length < VIDEO_HEADER || (memcmp(payload, "PDSV", 4) && memcmp(payload, "PDSF", 4)))
         return 0;
     video->connected = true;
-    return video_frames_push(&video->frames, payload, payload_length, now);
+    return frames_push(&video->frames, payload, payload_length, now);
 }
 
 int media_receive(struct input_state *input, struct preview *preview, struct video *video,
@@ -51,7 +51,7 @@ int media_receive(struct input_state *input, struct preview *preview, struct vid
                                   now) != 0)
             return -1;
         struct video_frame *frame;
-        while ((frame = video_frames_next(&video->frames, now))) {
+        while ((frame = frames_next(&video->frames, now))) {
             if (configured && !input_paused(input) &&
                 preview_publish(preview, frame->data, frame->length, frame->timestamp,
                                 frame->keyframe) != 0)

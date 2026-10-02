@@ -25,12 +25,8 @@ mod runtime;
 mod screen;
 #[path = "win/server.rs"]
 mod server;
-#[path = "win/session.rs"]
+#[path = "win/session/mod.rs"]
 mod session;
-#[path = "win/session_audio.rs"]
-mod session_audio;
-#[path = "win/session_input.rs"]
-mod session_input;
 #[path = "win/setup.rs"]
 mod setup;
 #[path = "win/signal.rs"]

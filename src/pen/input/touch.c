@@ -1,7 +1,7 @@
 #define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 
-#include "input_internal.h"
+#include "internal.h"
 #include "link.h"
 #include <errno.h>
 #include <linux/input.h>
@@ -83,7 +83,7 @@ static int input_send_delta(struct input_state *input, uint8_t type, int16_t val
     return link_send(input->link, packet, sizeof(packet));
 }
 
-int input_cancel_touch(struct input_state *input) {
+int cancel_touch(struct input_state *input) {
     bool dragging = input->inputs.touch.gesture == GESTURE_DRAG;
     input->inputs.touch.gesture = GESTURE_CANCEL;
     return dragging ? input_send_button(input, 1, false) : 0;
@@ -97,7 +97,7 @@ touch_distance(const struct input_state *input, uint16_t x0, uint16_t y0, uint16
     return x > y ? x + y / 2 : y + x / 2;
 }
 
-int input_touch_flush(struct input_state *input) {
+int touch_flush(struct input_state *input) {
     struct touch *touch = &input->inputs.touch;
     int first = -1;
     int second = -1;
@@ -105,7 +105,7 @@ int input_touch_flush(struct input_state *input) {
     uint16_t y;
     uint16_t other_x;
     uint16_t other_y;
-    if (!input->mouse) return input_cancel_touch(input);
+    if (!input->mouse) return cancel_touch(input);
     uint64_t now = milliseconds();
     for (int index = 0; index != CONTACTS; ++index) {
         if (!touch->contacts[index].active) continue;
@@ -129,18 +129,18 @@ int input_touch_flush(struct input_state *input) {
         return 0;
     }
     if (touch->gesture == GESTURE_CANCEL || touch->gesture == GESTURE_PAIR_END) return 0;
-    if (!map_touch(input, &touch->contacts[first], &x, &y)) return input_cancel_touch(input);
+    if (!map_touch(input, &touch->contacts[first], &x, &y)) return cancel_touch(input);
     if (second >= 0) {
         uint32_t distance;
         int32_t delta;
         if (!map_touch(input, &touch->contacts[second], &other_x, &other_y))
-            return input_cancel_touch(input);
+            return cancel_touch(input);
         distance = touch_distance(input, x, y, other_x, other_y);
         x = (uint16_t)(((uint32_t) x + other_x) / 2);
         y = (uint16_t)(((uint32_t) y + other_y) / 2);
         if (touch->gesture != GESTURE_PAIR && touch->gesture != GESTURE_SCROLL &&
             touch->gesture != GESTURE_ZOOM) {
-            if (input_cancel_touch(input) != 0) return -1;
+            if (cancel_touch(input) != 0) return -1;
             touch->gesture = GESTURE_PAIR;
             touch->started = now;
             touch->origin_x = touch->last_x = x;
@@ -208,16 +208,16 @@ static int touch_event(struct input_state *input, const struct input_event *even
     } else if (!touch->multitouch && event->type == EV_KEY && event->code == BTN_TOUCH)
         touch->contacts[0].active = event->value != 0;
     else if (event->type == EV_SYN) {
-        if (event->code == SYN_REPORT) return input_touch_flush(input);
+        if (event->code == SYN_REPORT) return touch_flush(input);
         if (event->code == SYN_DROPPED) {
             for (size_t index = 0; index < CONTACTS; ++index) touch->contacts[index].active = false;
-            return input_cancel_touch(input);
+            return cancel_touch(input);
         }
     }
     return 0;
 }
 
-int input_touch_read(struct input_state *input) {
+int touch_read(struct input_state *input) {
     struct input_event events[32];
     ssize_t count;
     while ((count = read(input->inputs.touch.fd, events, sizeof(events))) > 0) {

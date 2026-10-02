@@ -1,7 +1,7 @@
 #define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 
-#include "video_control.h"
+#include "control.h"
 #include "audio.h"
 #include "bytes.h"
 #include "input.h"

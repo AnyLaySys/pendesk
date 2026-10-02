@@ -17,6 +17,9 @@ use std::sync::{
 use std::time::{Duration, Instant};
 use windows::Win32::Networking::WinSock::SOCKET;
 
+mod audio;
+mod input;
+
 pub fn run(
     mut stream: TcpStream,
     config: &Config,
@@ -36,13 +39,18 @@ pub fn run(
     let viewport = Arc::new(Mutex::new(Viewport::new(video)?));
     let signal = Signal::new()?;
     let mut screen = Screen::new(&gpu, video, &mut viewport.lock().unwrap(), &signal)?;
-    let mut encoder = H264::new(&gpu, screen.dimensions.0, screen.dimensions.1, config.quality).map_err(|error| error.to_string())?;
+    let mut encoder = H264::new(&gpu, screen.dimensions.0, screen.dimensions.1)
+        .map_err(|error| error.to_string())?;
     protocol::write_config(&mut stream, screen.view).map_err(|error| error.to_string())?;
-    {
+    let mut canvas = {
         let viewport = viewport.lock().unwrap();
-        protocol::write_canvas(&mut stream, viewport.canvas(), viewport.origin()).map_err(|error| error.to_string())?;
-        protocol::write_pointer(&mut stream, viewport.pointer(), 0).map_err(|error| error.to_string())?;
-    }
+        let canvas = viewport.canvas();
+        protocol::write_canvas(&mut stream, canvas, viewport.origin())
+            .map_err(|error| error.to_string())?;
+        protocol::write_pointer(&mut stream, viewport.pointer(), 0)
+            .map_err(|error| error.to_string())?;
+        canvas
+    };
     let peer = transport::wait_video_peer(video_socket, &config.token, session.nonce)?;
     let mic_socket = MicSocket::new(SOCKET(video_socket.as_raw_socket() as usize))?;
     let active = Arc::new(AtomicBool::new(true));
@@ -50,14 +58,14 @@ pub fn run(
     let camera_active = Arc::new(AtomicBool::new(false));
     let refresh = Arc::new(AtomicBool::new(true));
     let audio_gate = Arc::new((Mutex::new(false), Condvar::new()));
-    let audio_thread = crate::session_audio::spawn(
+    let audio_thread = audio::spawn(
         Arc::clone(&active),
         Arc::clone(&audio_gate),
         video_socket,
         stream.try_clone().map_err(|error| error.to_string())?,
         peer,
     )?;
-    let input_thread = crate::session_input::spawn(
+    let input_thread = input::spawn(
         Arc::clone(&active),
         Arc::clone(&video_active),
         Arc::clone(&refresh),
@@ -99,30 +107,42 @@ pub fn run(
                 receive(20, &mut playback, &mut camera_receiver, &mut camera_window);
                 continue;
             }
-            let milliseconds = next_frame.saturating_duration_since(Instant::now()).as_micros().div_ceil(1000) as u32;
-            receive(milliseconds, &mut playback, &mut camera_receiver, &mut camera_window);
+            let milliseconds = next_frame
+                .saturating_duration_since(Instant::now())
+                .as_micros()
+                .div_ceil(1000) as u32;
+            receive(
+                milliseconds,
+                &mut playback,
+                &mut camera_receiver,
+                &mut camera_window,
+            );
             if !active.load(Ordering::Relaxed)
                 || !video_active.load(Ordering::Relaxed)
                 || Instant::now() < next_frame
             {
                 continue;
             }
-            let canvas = viewport.lock().unwrap().canvas();
-            if screen.changed() || screen.dimensions != (u32::from(canvas.width), u32::from(canvas.height)) {
-                screen = Screen::new(&gpu, video, &mut viewport.lock().unwrap(), &signal)?;
-                protocol::write_config(&mut stream, screen.view)
-                    .map_err(|error| error.to_string())?;
-                encoder = H264::new(&gpu, screen.dimensions.0, screen.dimensions.1, config.quality)
-                    .map_err(|error| error.to_string())?;
-                let viewport = viewport.lock().unwrap();
-                protocol::write_canvas(&mut stream, viewport.canvas(), viewport.origin()).map_err(|error| error.to_string())?;
-                protocol::write_pointer(&mut stream, viewport.pointer(), viewport.input_sequence).map_err(|error| error.to_string())?;
-                refresh.store(true, Ordering::Relaxed);
+            if screen.changed() {
+                break;
             }
             let now = Instant::now();
             let area = {
                 let mut viewport = viewport.lock().unwrap();
                 viewport.advance(now);
+                let current = viewport.canvas();
+                if canvas != current {
+                    protocol::write_canvas(&mut stream, current, viewport.origin())
+                        .map_err(|error| error.to_string())?;
+                    protocol::write_pointer(
+                        &mut stream,
+                        viewport.pointer(),
+                        viewport.input_sequence,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    canvas = current;
+                    refresh.store(true, Ordering::Relaxed);
+                }
                 viewport.capture_source()
             };
             let captured = match screen.capture(area)? {
@@ -133,10 +153,16 @@ pub fn run(
                 }
             };
             next_frame += interval;
-            if next_frame <= now { next_frame = now + interval; }
+            if next_frame <= now {
+                next_frame = now + interval;
+            }
             let keyframe = refresh.swap(false, Ordering::Relaxed) || last_idr.elapsed() >= keyframe;
-            encoder.encode(&captured, keyframe, &mut frame).map_err(|error| error.to_string())?;
-            if keyframe { last_idr = now; }
+            encoder
+                .encode(&captured, keyframe, &mut frame)
+                .map_err(|error| error.to_string())?;
+            if keyframe {
+                last_idr = now;
+            }
             if !frame.is_empty() {
                 sequence = sequence.wrapping_add(1);
                 let timestamp = now.duration_since(started).as_micros() as u64 * 9 / 100;

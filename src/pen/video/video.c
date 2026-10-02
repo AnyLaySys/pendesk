@@ -10,7 +10,7 @@
 #include "mic.h"
 #include "preview.h"
 #include "media_receive.h"
-#include "video_control.h"
+#include "control.h"
 #include <errno.h>
 #include <poll.h>
 #include <string.h>

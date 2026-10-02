@@ -56,7 +56,13 @@ pub fn wait_video_peer(
     }
 }
 
-pub fn send_video_frame(socket: &UdpSocket, peer: VideoPeer, sequence: u32, timestamp: u64, frame: &[u8]) {
+pub fn send_video_frame(
+    socket: &UdpSocket,
+    peer: VideoPeer,
+    sequence: u32,
+    timestamp: u64,
+    frame: &[u8],
+) {
     let Ok(length) = u32::try_from(frame.len()) else {
         return;
     };
@@ -78,13 +84,17 @@ pub fn send_video_frame(socket: &UdpSocket, peer: VideoPeer, sequence: u32, time
     for index in 0..fragments {
         if index > 0 && index % 4 == 0 {
             let due = spread * u32::from(index) / u32::from(fragments);
-            if let Some(wait) = due.checked_sub(started.elapsed()) { thread::sleep(wait); }
+            if let Some(wait) = due.checked_sub(started.elapsed()) {
+                thread::sleep(wait);
+            }
         }
         packet[..4].copy_from_slice(&VIDEO_FRAME);
         let start = usize::from(index) * VIDEO_PAYLOAD;
         let end = (start + VIDEO_PAYLOAD).min(frame.len());
         packet[17..19].copy_from_slice(&index.to_be_bytes());
-        for (accumulator, value) in parity.iter_mut().zip(&frame[start..end]) { *accumulator ^= *value; }
+        for (accumulator, value) in parity.iter_mut().zip(&frame[start..end]) {
+            *accumulator ^= *value;
+        }
         packet[VIDEO_HEADER..VIDEO_HEADER + end - start].copy_from_slice(&frame[start..end]);
         if socket
             .send_to(&packet[..VIDEO_HEADER + end - start], peer.address)
@@ -96,7 +106,8 @@ pub fn send_video_frame(socket: &UdpSocket, peer: VideoPeer, sequence: u32, time
             packet[..4].copy_from_slice(b"PDSF");
             packet[17..19].copy_from_slice(&(index / 8 * 8).to_be_bytes());
             packet[VIDEO_HEADER..].copy_from_slice(&parity);
-            let length = (frame.len() - usize::from(index / 8 * 8) * VIDEO_PAYLOAD).min(VIDEO_PAYLOAD);
+            let length =
+                (frame.len() - usize::from(index / 8 * 8) * VIDEO_PAYLOAD).min(VIDEO_PAYLOAD);
             let _ = socket.send_to(&packet[..VIDEO_HEADER + length], peer.address);
             parity.fill(0);
         }

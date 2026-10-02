@@ -1,7 +1,7 @@
 #define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 
-#include "input_internal.h"
+#include "internal.h"
 #include "keymap.h"
 #include <dirent.h>
 #include <errno.h>
@@ -25,7 +25,7 @@ static int add_keyboard(struct inputs *inputs, int fd) {
     return 0;
 }
 
-int input_devices_open(struct inputs *inputs) {
+int devices_open(struct inputs *inputs) {
     DIR *directory;
     struct dirent *entry;
     memset(inputs, 0, sizeof(*inputs));
@@ -112,7 +112,7 @@ int input_devices_open(struct inputs *inputs) {
     return -1;
 }
 
-int input_keyboard_read(struct input_state *input, int fd) {
+int keyboard_read(struct input_state *input, int fd) {
     struct input_event events[32];
     ssize_t count;
     while ((count = read(fd, events, sizeof(events))) > 0) {

@@ -47,7 +47,9 @@ pub fn spawn(
                         viewport.move_pointer(x, y)
                     };
                     let _ = input::move_pointer(point.0, point.1);
-                    if protocol::write_pointer(&mut stream, point, sequence).is_err() { break; }
+                    if protocol::write_pointer(&mut stream, point, sequence).is_err() {
+                        break;
+                    }
                 }
                 Ok(Input::Button(button, down)) if (1..=3).contains(&button) => {
                     if input::button(button, down).is_ok() {

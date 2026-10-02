@@ -1,7 +1,7 @@
 #define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 
-#include "input_internal.h"
+#include "internal.h"
 #include "cfg.h"
 #include "link.h"
 #include <errno.h>
@@ -27,16 +27,16 @@ static void *input_loop(void *argument) {
             if (errno == EINTR) continue;
             break;
         }
-        if (events[0].revents && input_control_read(input) != 0) break;
-        if (events[1].revents && input_touch_read(input) != 0) break;
+        if (events[0].revents && control_read(input) != 0) break;
+        if (events[1].revents && touch_read(input) != 0) break;
         for (size_t index = 0; index != input->inputs.keyboard_count; ++index) {
             if (events[index + 2].revents &&
-                input_keyboard_read(input, events[index + 2].fd) != 0) {
+                keyboard_read(input, events[index + 2].fd) != 0) {
                 result = -1;
                 break;
             }
         }
-        if (result < 0 || input_touch_flush(input) != 0) break;
+        if (result < 0 || touch_flush(input) != 0) break;
     }
     free(events);
     link_stop(input->link);
@@ -46,12 +46,12 @@ static void *input_loop(void *argument) {
 int input_open(struct input_state *input, const char *config) {
     *input = (struct input_state) {.blocked = true, .control = -1, .pan_mutex = PTHREAD_MUTEX_INITIALIZER};
     input->pan = pan_open(1);
-    if (!input->pan || input_devices_open(&input->inputs) != 0 ||
+    if (!input->pan || devices_open(&input->inputs) != 0 ||
         cfg_control_path(input->control_path, sizeof(input->control_path), config) != 0) {
         input_close(input);
         return -1;
     }
-    if ((input->control = input_control_open(input->control_path)) < 0) {
+    if ((input->control = control_open(input->control_path)) < 0) {
         input_close(input);
         return -1;
     }

@@ -29,10 +29,10 @@ struct video_frames {
 };
 
 int
-video_frames_push(struct video_frames *frames, const uint8_t *packet, size_t length, uint64_t now);
+frames_push(struct video_frames *frames, const uint8_t *packet, size_t length, uint64_t now);
 
-struct video_frame *video_frames_next(struct video_frames *frames, uint64_t now);
+struct video_frame *frames_next(struct video_frames *frames, uint64_t now);
 
-void video_frames_free(struct video_frames *frames);
+void frames_free(struct video_frames *frames);
 
 #endif

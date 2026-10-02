@@ -4,7 +4,7 @@
 #include "cfg.h"
 #include "input.h"
 #include "protocol.h"
-#include "video_frames.h"
+#include "frames.h"
 #include <stdbool.h>
 #include <pthread.h>
 #include <stddef.h>

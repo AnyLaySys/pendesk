@@ -85,9 +85,9 @@ int files_remote_list(struct files *files, struct file_panel *panel);
 
 int files_refresh_panel(struct files *files, bool pen);
 
-int files_panel_select(struct files *files, bool pen, size_t row);
+int panel_select(struct files *files, bool pen, size_t row);
 
-int files_panel_open(struct files *files, bool pen, size_t row);
+int panel_open(struct files *files, bool pen, size_t row);
 
 int files_state_write(struct files *files);
 

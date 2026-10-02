@@ -1,7 +1,7 @@
 #define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 
-#include "files_internal.h"
+#include "internal.h"
 #include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -112,7 +112,7 @@ int files_refresh_panel(struct files *files, bool pen) {
     return pen ? local_list(&files->pen) : files_remote_list(files, &files->windows);
 }
 
-int files_panel_select(struct files *files, bool pen, size_t row) {
+int panel_select(struct files *files, bool pen, size_t row) {
     struct file_panel *panel = pen ? &files->pen : &files->windows;
     size_t index;
     bool parent = panel_parent(panel);
@@ -128,7 +128,7 @@ int files_panel_select(struct files *files, bool pen, size_t row) {
     return 0;
 }
 
-int files_panel_open(struct files *files, bool pen, size_t row) {
+int panel_open(struct files *files, bool pen, size_t row) {
     struct file_panel *panel = pen ? &files->pen : &files->windows;
     size_t index;
     bool parent = panel_parent(panel);

@@ -1,7 +1,7 @@
 #define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 
-#include "input_internal.h"
+#include "internal.h"
 #include "link.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -9,7 +9,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-int input_control_open(const char *path) {
+int control_open(const char *path) {
     int fd;
     unlink(path);
     if (mkfifo(path, 0600) != 0) return -1;
@@ -22,7 +22,7 @@ int input_control_open(const char *path) {
     return fd;
 }
 
-int input_control_read(struct input_state *input) {
+int control_read(struct input_state *input) {
     uint8_t packet[64];
     ssize_t count;
     while ((count = read(input->control, packet, sizeof(packet))) > 0) {
@@ -58,7 +58,7 @@ int input_control_read(struct input_state *input) {
                 atomic_store(&input->recording, recording);
                 input->blocked = input->control_buffer[offset + 1] & STATE_BLOCKED;
                 input->mouse = !(input->control_buffer[offset + 1] & STATE_MOUSE_PAUSED);
-                if (input_cancel_touch(input) != 0) return -1;
+                if (cancel_touch(input) != 0) return -1;
                 if (link_running(input->link)) {
                     uint8_t video[] = {0x25, paused ? 0 : 1};
                     if (link_send(input->link, video, sizeof(video)) != 0) return -1;

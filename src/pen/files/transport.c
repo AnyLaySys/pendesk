@@ -1,7 +1,7 @@
 #define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 
-#include "files_internal.h"
+#include "internal.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
