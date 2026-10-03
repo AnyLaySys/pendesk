@@ -67,7 +67,13 @@ write_devices() {
 }
 stop() {
     if alive "$1"; then
-        kill -9 "$(cat "$1")" 2>/dev/null || :
+        kill "$pid" 2>/dev/null || :
+        stopping=0
+        while alive "$1" && [ "$stopping" -lt 40 ]; do
+            sleep 0.1
+            stopping=$((stopping + 1))
+        done
+        if alive "$1"; then kill -9 "$pid" 2>/dev/null || :; fi
     fi
     rm -f "$1"
 }
@@ -121,7 +127,7 @@ initialize() {
     fi
     [ -f "$device_list" ] && chmod 644 "$device_list"
     printf '%s\n' "$slot" > "$data/slot"
-    chmod 755 "$bin/pdd" "$bin/tailscale" "$bin/tailscaled"
+    chmod 755 "$bin/pdd" "$bin/pdc" "$bin/tailscale" "$bin/tailscaled"
     chmod 755 "$bin/adb-guard"
     /bin/setsid "$bin/adb-guard" "$data" < /dev/null > /dev/null 2>&1 &
 }
@@ -171,6 +177,7 @@ case "${1:-}" in
 esac
 case "${1:-}" in
     network) network ;;
+    restart) stop "$data/pdd.pid"; run ;;
     status)
         network
         HOME="$data" exec "$bin/tailscale" --socket="$data/tailscaled.sock" status --json

@@ -1,177 +1,117 @@
-use opus_decoder::OpusDecoder;
+use opus::{Channels, Decoder};
 use std::collections::VecDeque;
 use std::io;
-use windows::Win32::Foundation::E_NOTIMPL;
+use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Media::Audio::{
-    AUDCLNT_SHAREMODE_SHARED, IAudioClient, IAudioRenderClient, WAVEFORMATEXTENSIBLE,
+    AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
+    AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, IAudioClient,
+    IAudioRenderClient,
 };
-use windows::Win32::Media::Multimedia::{KSDATAFORMAT_SUBTYPE_IEEE_FLOAT, WAVE_FORMAT_IEEE_FLOAT};
-use windows::Win32::System::Com::{
-    COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize,
-};
-use windows::core::Error as WindowsError;
+use windows::Win32::System::Threading::CreateEventW;
+use windows::core::Owned;
 
 pub struct Playback {
     client: IAudioClient,
     render: IAudioRenderClient,
-    channels: usize,
-    rate: u32,
-    float: bool,
-    bytes: usize,
+    event: Owned<HANDLE>,
     buffer: u32,
-    decoder: OpusDecoder,
+    decoder: Decoder,
     pending: VecDeque<i16>,
+    sequence: Option<u16>,
 }
 
 impl Playback {
     pub fn new() -> io::Result<Self> {
-        unsafe {
-            CoInitializeEx(None, COINIT_MULTITHREADED)
-                .ok()
-                .map_err(|error| io::Error::other(error.to_string()))?;
-            let result = Self::open();
-            if result.is_err() {
-                CoUninitialize();
-            }
-            result
-        }
-    }
-
-    fn open() -> io::Result<Self> {
-        unsafe {
-            let client = crate::audio::default_render_client()
-                .map_err(|error| io::Error::other(error.to_string()))?;
-            let format = client
-                .GetMixFormat()
-                .map_err(|error| io::Error::other(error.to_string()))?;
-            let tag = (*format).wFormatTag;
-            let channels = usize::from((*format).nChannels);
-            let rate = (*format).nSamplesPerSec;
-            let float = tag == WAVE_FORMAT_IEEE_FLOAT as u16
-                || (tag == 0xfffe
-                    && std::ptr::read_unaligned(
-                        &raw const (*format.cast::<WAVEFORMATEXTENSIBLE>()).SubFormat,
-                    ) == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT);
-            if !(1..=8).contains(&channels) || !(8000..=192000).contains(&rate) {
-                CoTaskMemFree(Some(format.cast()));
-                return Err(io::Error::other(
-                    WindowsError::from_hresult(E_NOTIMPL).to_string(),
-                ));
-            }
-            let bytes = usize::from((*format).nBlockAlign) / channels;
-            if (float && bytes != 4) || (!float && !matches!(bytes, 2..=4)) {
-                CoTaskMemFree(Some(format.cast()));
-                return Err(io::Error::other(
-                    WindowsError::from_hresult(E_NOTIMPL).to_string(),
-                ));
-            }
-            let initialized =
-                client.Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 200_000, 0, format, None);
-            CoTaskMemFree(Some(format.cast()));
-            initialized.map_err(|error| io::Error::other(error.to_string()))?;
-            let render: IAudioRenderClient = client
-                .GetService()
-                .map_err(|error| io::Error::other(error.to_string()))?;
-            let buffer = client
-                .GetBufferSize()
-                .map_err(|error| io::Error::other(error.to_string()))?;
-            client
-                .Start()
-                .map_err(|error| io::Error::other(error.to_string()))?;
-            let decoder =
-                OpusDecoder::new(48000, 1).map_err(|error| io::Error::other(error.to_string()))?;
-            Ok(Self {
+        let result = (|| unsafe {
+            let client = crate::audio::default_render_client()?;
+            client.Initialize(
+                AUDCLNT_SHAREMODE_SHARED,
+                AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+                    | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+                    | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+                200_000,
+                0,
+                &crate::audio::pcm_format(1),
+                None,
+            )?;
+            let event = Owned::new(CreateEventW(None, false, false, None)?);
+            client.SetEventHandle(*event)?;
+            let render = client.GetService()?;
+            let buffer = client.GetBufferSize()?;
+            let decoder = Decoder::new(48_000, Channels::Mono).map_err(|error| {
+                windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error.to_string())
+            })?;
+            client.Start()?;
+            Ok::<_, windows::core::Error>(Self {
                 client,
                 render,
-                channels,
-                rate,
-                float,
-                bytes,
+                event,
                 buffer,
                 decoder,
                 pending: VecDeque::new(),
+                sequence: None,
             })
-        }
+        })();
+        result.map_err(|error| io::Error::other(error.to_string()))
+    }
+
+    pub fn event(&self) -> HANDLE {
+        *self.event
     }
 
     pub fn packet(&mut self, rtp: &[u8]) -> io::Result<()> {
         let Some(payload) = opus_payload(rtp) else {
             return Ok(());
         };
+        let sequence = u16::from_be_bytes([rtp[2], rtp[3]]);
         let mut pcm = [0i16; 5760];
+        if let Some(previous) = self.sequence {
+            let distance = sequence.wrapping_sub(previous);
+            if distance == 0 || distance >= 0x8000 {
+                return Ok(());
+            }
+            if distance <= 4 {
+                for _ in 1..distance {
+                    let frames = self
+                        .decoder
+                        .decode(&[], &mut pcm[..crate::audio::FRAME_SAMPLES], false)
+                        .map_err(io::Error::other)?;
+                    self.pending.extend(&pcm[..frames]);
+                }
+            } else {
+                self.decoder.reset_state().map_err(io::Error::other)?;
+            }
+        }
+        self.sequence = Some(sequence);
         let frames = self
             .decoder
             .decode(payload, &mut pcm, false)
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        if frames == 0 {
-            return Ok(());
-        }
-        let output_frames = (frames as u64 * u64::from(self.rate)).div_ceil(48000) as usize;
-        for output in 0..output_frames {
-            let position = output as u64 * 48000;
-            let source = (position / u64::from(self.rate)) as usize;
-            let fraction = position % u64::from(self.rate);
-            let first = i64::from(pcm[source.min(frames - 1)]);
-            let second = i64::from(pcm[(source + 1).min(frames - 1)]);
-            let value = (first * (i64::from(self.rate) - fraction as i64)
-                + second * fraction as i64)
-                / i64::from(self.rate);
-            self.pending.push_back(value as i16);
-        }
-        while self.pending.len() > self.rate as usize / 5 {
+            .map_err(io::Error::other)?;
+        self.pending.extend(&pcm[..frames]);
+        while self.pending.len() > 9600 {
             self.pending.pop_front();
         }
-        let padding = unsafe { self.client.GetCurrentPadding() }
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        let frames = self
-            .pending
-            .len()
-            .min(self.buffer.saturating_sub(padding) as usize);
-        if frames == 0 {
-            return Ok(());
-        }
-        unsafe {
-            let data = self
-                .render
-                .GetBuffer(frames as u32)
-                .map_err(|error| io::Error::other(error.to_string()))?;
-            if self.float {
-                let output =
-                    std::slice::from_raw_parts_mut(data.cast::<f32>(), frames * self.channels);
-                for frame in 0..frames {
-                    let value = f32::from(self.pending.pop_front().unwrap()) / 32768.0;
-                    for channel in 0..self.channels {
-                        output[frame * self.channels + channel] = value;
-                    }
+        self.flush()
+    }
+
+    pub fn flush(&mut self) -> io::Result<()> {
+        (|| unsafe {
+            let padding = self.client.GetCurrentPadding()?;
+            let count = self
+                .pending
+                .len()
+                .min(self.buffer.saturating_sub(padding) as usize);
+            if count != 0 {
+                let pointer = self.render.GetBuffer(count as u32)?;
+                let output = std::slice::from_raw_parts_mut(pointer.cast::<i16>(), count);
+                for value in output {
+                    *value = self.pending.pop_front().unwrap();
                 }
-            } else {
-                let output = std::slice::from_raw_parts_mut(
-                    data.cast::<u8>(),
-                    frames * self.channels * self.bytes,
-                );
-                for frame in 0..frames {
-                    let value = i32::from(self.pending.pop_front().unwrap());
-                    for channel in 0..self.channels {
-                        let offset = (frame * self.channels + channel) * self.bytes;
-                        match self.bytes {
-                            2 => output[offset..offset + 2]
-                                .copy_from_slice(&(value as i16).to_le_bytes()),
-                            3 => {
-                                let sample = (value << 8).to_le_bytes();
-                                output[offset..offset + 3].copy_from_slice(&sample[..3]);
-                            }
-                            4 => output[offset..offset + 4]
-                                .copy_from_slice(&(value << 16).to_le_bytes()),
-                            _ => unreachable!(),
-                        }
-                    }
-                }
+                self.render.ReleaseBuffer(count as u32, 0)?;
             }
-            self.render
-                .ReleaseBuffer(frames as u32, 0)
-                .map_err(|error| io::Error::other(error.to_string()))?;
-        }
-        Ok(())
+            Ok::<_, windows::core::Error>(())
+        })()
+        .map_err(|error| io::Error::other(error.to_string()))
     }
 }
 
@@ -179,7 +119,6 @@ impl Drop for Playback {
     fn drop(&mut self) {
         unsafe {
             let _ = self.client.Stop();
-            CoUninitialize();
         }
     }
 }

@@ -4,10 +4,13 @@
 #include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/types.h>
 
 extern volatile sig_atomic_t alive;
 
 uint64_t milliseconds(void);
+
+void io_stop_process(pid_t process);
 
 int io_wait(int fd, short events);
 

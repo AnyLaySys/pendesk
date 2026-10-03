@@ -37,7 +37,7 @@ void video_receive(struct input_state *input, struct preview *preview, struct vi
             atomic_store(&input->camera, false);
             atomic_store(&input->recording, false);
         }
-        if (input_camera(input) && camera.process <= 0 && cam_start(&camera, cfg) != 0) {
+        if (input_camera(input) && camera.process <= 0 && cam_start(&camera) != 0) {
             atomic_store(&input->camera, false);
             atomic_store(&input->recording, false);
         }
@@ -80,7 +80,7 @@ void video_receive(struct input_state *input, struct preview *preview, struct vi
             link_hello(video, cfg);
             next_hello = now + 100;
         }
-        result = poll(events, sizeof(events) / sizeof(events[0]), 5);
+        result = poll(events, sizeof(events) / sizeof(events[0]), cam_timeout(&camera, now));
         if (result < 0) {
             if (errno == EINTR) continue;
             break;
@@ -88,7 +88,7 @@ void video_receive(struct input_state *input, struct preview *preview, struct vi
         if (media_receive(input, preview, video, cfg, &audio, configured, milliseconds()) != 0)
             break;
         if (events[2].revents & POLLIN && mic_forward(&microphone, video, cfg) != 0) break;
-        if (events[3].revents & POLLIN && cam_forward(&camera, video, cfg) != 0) break;
+        if (camera.process > 0 && cam_forward(&camera, video, cfg) != 0) break;
         if (events[0].revents & POLLIN) {
             for (;;) {
                 ssize_t length = read(link->fd, control + control_length,

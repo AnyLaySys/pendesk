@@ -1,7 +1,7 @@
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
 const MAGIC: [u8; 4] = *b"PDSK";
-pub const VERSION: u8 = 14;
+pub const VERSION: u8 = 15;
 pub const FPS: u32 = 60;
 const CONFIG: u8 = 0x10;
 const AUDIO: u8 = 0x11;

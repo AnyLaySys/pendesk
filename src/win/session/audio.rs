@@ -1,4 +1,4 @@
-use crate::all::media as transport;
+use crate::transport;
 use crate::all::protocol;
 use crate::audio::{self, Audio};
 use std::net::{TcpStream, UdpSocket};
@@ -7,6 +7,8 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use std::thread;
+use std::time::Duration;
+use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
 
 pub fn spawn(
     active: Arc<AtomicBool>,
@@ -19,6 +21,9 @@ pub fn spawn(
         .try_clone()
         .map_err(|error| error.to_string())?;
     Ok(thread::spawn(move || {
+        if unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_err() {
+            return;
+        }
         let mut samples = Vec::new();
         let mut frame = Vec::with_capacity(audio::FRAME_SAMPLES * 2);
         let mut encoded = [0; 1152];
@@ -35,6 +40,11 @@ pub fn spawn(
                 break;
             }
             let Ok(mut audio) = Audio::new() else {
+                drop(
+                    gate.1
+                        .wait_timeout(gate.0.lock().unwrap(), Duration::from_millis(250))
+                        .unwrap(),
+                );
                 continue;
             };
             let Ok(mut encoder) = audio::encoder() else {
@@ -63,5 +73,6 @@ pub fn spawn(
                 break;
             }
         }
+        unsafe { CoUninitialize() };
     }))
 }

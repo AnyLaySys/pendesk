@@ -3,7 +3,7 @@
 
 #include "cam.h"
 #include "record.h"
-#include <arpa/inet.h>
+#include "io.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -113,20 +113,20 @@ void cam_init(struct camera *camera) {
     *camera = (struct camera) {.fd = -1};
 }
 
-int cam_start(struct camera *camera, const struct cfg *cfg) {
+int cam_start(struct camera *camera) {
     char device[64];
-    char device_arg[80];
-    char file_arg[192];
-    char host[INET_ADDRSTRLEN];
+    char executable[512];
     int descriptors[2];
     pid_t process;
     pid_t parent = getpid();
     if (camera->process > 0 || find_camera(device, sizeof(device)) != 0) return -1;
-    if (inet_pton(AF_INET, cfg->host, host) != 1 ||
-        recording_file("Video", "avi", camera->path, sizeof(camera->path)) != 0)
+    if (recording_file("Video", "avi", camera->path, sizeof(camera->path)) != 0)
         return -1;
-    snprintf(device_arg, sizeof(device_arg), "device=%s", device);
-    snprintf(file_arg, sizeof(file_arg), "location=%s", camera->path);
+    ssize_t size = readlink("/proc/self/exe", executable, sizeof(executable) - 1);
+    if (size < 0) return -1;
+    executable[size] = '\0';
+    char *name = strrchr(executable, '/');
+    if (!name || snprintf(name + 1, sizeof(executable) - (size_t)(name + 1 - executable), "pdc") != 3) return -1;
     if (pipe2(descriptors, O_CLOEXEC) != 0) return -1;
     process = fork();
     if (process < 0) {
@@ -144,37 +144,29 @@ int cam_start(struct camera *camera, const struct cfg *cfg) {
         if (null >= 0) dup2(null, STDERR_FILENO);
         if (descriptors[1] > STDERR_FILENO) close(descriptors[1]);
         if (null > STDERR_FILENO) close(null);
-        execl("/usr/bin/gst-launch-1.0", "gst-launch-1.0", "-e", "-q", "v4l2src", device_arg,
-              "io-mode=mmap", "!", "video/x-raw,format=NV12,width=1280,height=720", "!", "jpegenc",
-              "quality=60", "!", "tee", "name=frames", "frames.", "!", "queue", "leaky=downstream",
-              "max-size-buffers=1", "max-size-bytes=0", "max-size-time=0", "!", "fdsink", "fd=1",
-              "sync=false", "frames.", "!", "queue", "leaky=downstream", "max-size-buffers=1",
-              "max-size-bytes=0", "max-size-time=0", "!", "avimux", "!", "filesink", file_arg,
-              (char *) NULL);
+        execl(executable, "pdc", device, camera->path, (char *) NULL);
         _exit(127);
     }
     close(descriptors[1]);
     fcntl(descriptors[0], F_SETFL, O_NONBLOCK);
     camera->fd = descriptors[0];
     camera->process = process;
-    camera->sequence = 0;
-    camera->capacity = CAMERA_MAX_FRAME;
-    camera->frame = malloc(camera->capacity);
-    if (!camera->frame) {
-        cam_stop(camera);
-        return -1;
-    }
     return 0;
 }
 
-void cam_stop(struct camera *camera) {
-    if (camera->process > 0) {
-        kill(camera->process, SIGKILL);
-        while (waitpid(camera->process, NULL, 0) < 0 && errno == EINTR) {}
-    }
+static void release(struct camera *camera) {
+    uint32_t sequence = camera->sequence;
     if (camera->fd >= 0) close(camera->fd);
-    free(camera->frame);
+    free(camera->incoming.data);
+    free(camera->pending.data);
+    free(camera->sending.data);
     cam_init(camera);
+    camera->sequence = sequence;
+}
+
+void cam_stop(struct camera *camera) {
+    io_stop_process(camera->process);
+    release(camera);
 }
 
 int cam_running(struct camera *camera) {
@@ -183,8 +175,6 @@ int cam_running(struct camera *camera) {
     if (camera->process <= 0) return 0;
     do result = waitpid(camera->process, &status, WNOHANG); while (result < 0 && errno == EINTR);
     if (result == 0) return 1;
-    if (camera->fd >= 0) close(camera->fd);
-    free(camera->frame);
-    cam_init(camera);
+    release(camera);
     return 0;
 }

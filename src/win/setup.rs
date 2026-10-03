@@ -48,7 +48,13 @@ pub fn install(serial: Option<String>) -> Result<(), String> {
     let _ = pen_shell(&serial, &format!("rm -f {}", sh_quote(&remote)));
     let result = result?;
     if !result.contains("\"ret\":0") && !result.contains("\"ret\": 0") {
-        return Err("安装失败".into());
+        std::process::exit(1);
+    }
+    if let Some(app) = installed(&serial, false)? {
+        pen_shell(
+            &serial,
+            &format!("/bin/sh {} restart", sh_quote(&app.start)),
+        )?;
     }
     println!("已安装PenDesk");
     Ok(())
@@ -254,44 +260,43 @@ fn tailscale_running(path: &Path) -> bool {
 }
 
 fn push(serial: &str, local: &Path, remote: &str) -> Result<(), String> {
-    let output = adb(vec![
+    adb(vec![
         "-s".into(),
         serial.into(),
         "push".into(),
         local.to_string_lossy().into_owned(),
         remote.into(),
     ])?;
-    if output.status.success() {
-        print!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        Ok(())
-    } else {
-        Err("ADB执行失败".into())
-    }
+    Ok(())
 }
 
 fn adb(arguments: Vec<String>) -> Result<Output, String> {
-    process(Path::new("adb"), arguments, Duration::from_secs(30)).map_err(|_| "ADB执行失败".into())
+    let output = Command::new("adb")
+        .args(arguments)
+        .output()
+        .map_err(|error| error.to_string())?;
+    print!("{}", String::from_utf8_lossy(&output.stdout));
+    if !output.stdout.is_empty() && !output.stdout.ends_with(b"\n") {
+        println!();
+    }
+    eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    if !output.stderr.is_empty() && !output.stderr.ends_with(b"\n") {
+        eprintln!();
+    }
+    if !output.status.success() {
+        std::process::exit(output.status.code().unwrap_or(1));
+    }
+    Ok(output)
 }
 
 fn pen_shell(serial: &str, command: &str) -> Result<String, String> {
-    let script = format!("{command}; result=$?; printf '\\nPENDESK_STATUS:%s\\n' \"$result\"");
-    let output = adb(vec!["-s".into(), serial.into(), "shell".into(), script])?;
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    if !stdout.contains("PENDESK_STATUS:0") {
-        let detail = String::from_utf8_lossy(&output.stderr);
-        if stdout.contains("shell auth")
-            || stdout.contains("password:")
-            || detail.contains("shell auth")
-        {
-            return Err(format!("ADB未授权:adb -s {serial} shell auth"));
-        }
-        return Err("设备命令失败".into());
-    }
-    Ok(stdout.replace("PENDESK_STATUS:0", "").trim().to_string())
+    let output = adb(vec![
+        "-s".into(),
+        serial.into(),
+        "shell".into(),
+        command.into(),
+    ])?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn process(path: &Path, arguments: Vec<String>, timeout: Duration) -> Result<Output, String> {

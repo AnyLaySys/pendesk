@@ -1,7 +1,7 @@
 mod all;
 #[path = "win/audio.rs"]
 mod audio;
-#[path = "win/cam.rs"]
+#[path = "win/cam/mod.rs"]
 mod cam;
 #[path = "win/cfg.rs"]
 mod cfg;
@@ -17,6 +17,8 @@ mod gpu;
 mod input;
 #[path = "win/media.rs"]
 mod media;
+#[path = "win/transport.rs"]
+mod transport;
 #[path = "win/mic.rs"]
 mod mic;
 #[path = "win/runtime.rs"]

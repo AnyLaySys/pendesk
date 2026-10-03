@@ -92,6 +92,7 @@ fi
 cc -O2 -Wno-discarded-qualifiers -I "$quickjs" -include "$miniapp/qjsconfig.h" -o "$compiler" "$miniapp/qjscompile.c" "$quickjs/quickjs.c" "$quickjs/cutils.c" "$quickjs/libregexp.c" "$quickjs/libunicode.c" "$quickjs/libbf.c" -lm -ldl -lpthread
 aarch64-linux-gnu-gcc -std=c17 -O2 -Wall -Wextra -Werror -pthread -static -I "$pen/common" -I "$pen/net" -I "$pen/input" -I "$pen/video" -I "$pen/camera" -I "$pen/audio" -I "$pen/files" "$pen/pdd.c" "$pen/common/cfg.c" "$pen/common/io.c" "$pen/common/pan.c" "$pen/common/record.c" "$pen/common/display.c" "$pen/net/link.c" "$pen/net/socks.c" "$pen/net/nonce.c" "$pen/input/input.c" "$pen/input/input_pan.c" "$pen/input/control.c" "$pen/input/devices.c" "$pen/input/keymap.c" "$pen/input/touch.c" "$pen/video/video.c" "$pen/video/control.c" "$pen/video/media_receive.c" "$pen/video/frames.c" "$pen/video/preview.c" "$pen/camera/device.c" "$pen/camera/stream.c" "$pen/audio/audio.c" "$pen/audio/mic.c" "$pen/files/files.c" "$pen/files/transport.c" "$pen/files/panel.c" "$pen/files/transfer.c" -o "$out/pdd"
 aarch64-linux-gnu-gcc -std=c17 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -Wno-cast-function-type -fPIC -shared -Wl,-z,nodelete -DGLIB_VERSION_MIN_REQUIRED=GLIB_VERSION_2_68 -DGLIB_VERSION_MAX_ALLOWED=GLIB_VERSION_2_68 -DGST_VERSION_MIN_REQUIRED=GST_VERSION_1_22 -DGST_VERSION_MAX_ALLOWED=GST_VERSION_1_22 $(PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig pkg-config --cflags gstreamer-app-1.0 | sed 's/-I/-isystem /g') -isystem "$quickjs" "$miniapp/bridge.c" "$pen/common/pan.c" -ldl -o "$out/libjsapi_vid.so"
+aarch64-linux-gnu-gcc -std=c17 -O2 -Wall -Wextra -Werror -pthread -DGLIB_VERSION_MIN_REQUIRED=GLIB_VERSION_2_68 -DGLIB_VERSION_MAX_ALLOWED=GLIB_VERSION_2_68 -I "$pen/common" $(PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig pkg-config --cflags gstreamer-app-1.0 | sed 's/-I/-isystem /g') "$pen/camera/capture.c" "$pen/common/io.c" -o "$out/pdc" $(PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig pkg-config --libs gstreamer-app-1.0)
 "$compiler" "$stage/app.js" "$out/app.js.bin"
 "$compiler" "$stage/index.js" "$out/index.js.bin" module
 '@
@@ -108,6 +109,7 @@ function Build {
     & cargo build --release --target-dir $target --manifest-path (Join-Path $root 'Cargo.toml')
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     Copy-Item -LiteralPath (Join-Path $target 'release\pendesk.exe') -Destination $windowsExecutable -Force
+    Copy-Item -LiteralPath (Join-Path $target 'release\pendesk_camera.dll') -Destination (Join-Path $out 'pendesk_camera.dll') -Force
     Fetch-Tailscale
     Build-LinuxArtifacts
     Build-Package $package
@@ -160,6 +162,7 @@ function Build-Package([string]$Output) {
         (Join-Path $penBuild 'app.js.bin'),
         (Join-Path $penBuild 'index.js.bin'),
         (Join-Path $penBuild 'pdd'),
+        (Join-Path $penBuild 'pdc'),
         (Join-Path $penBuild 'libjsapi_vid.so'),
         (Join-Path $penBuild 'tailscale'),
         (Join-Path $penBuild 'tailscaled')
@@ -177,6 +180,7 @@ function Build-Package([string]$Output) {
         New-Item -ItemType Directory -Force (Join-Path $stage 'libs') | Out-Null
         Copy-Item (Join-Path $penBuild 'libjsapi_vid.so') -Destination (Join-Path $stage 'libs/libjsapi_vid.so')
         Copy-Item (Join-Path $penBuild 'pdd') -Destination (Join-Path $stage 'bin\pdd')
+        Copy-Item (Join-Path $penBuild 'pdc') -Destination (Join-Path $stage 'bin\pdc')
         Copy-Item (Join-Path $penBuild 'tailscale') -Destination (Join-Path $stage 'bin\tailscale')
         Copy-Item (Join-Path $penBuild 'tailscaled') -Destination (Join-Path $stage 'bin\tailscaled')
         $index = Get-Content (Join-Path $stage 'index.js') -Raw -Encoding UTF8

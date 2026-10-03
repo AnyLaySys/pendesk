@@ -3,6 +3,7 @@
 
 #include "mic.h"
 #include "record.h"
+#include "io.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <signal.h>
@@ -10,7 +11,6 @@
 #include <string.h>
 #include <sys/prctl.h>
 #include <sys/socket.h>
-#include <time.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -104,24 +104,7 @@ int mic_running(struct microphone *microphone) {
 }
 
 void mic_stop(struct microphone *microphone) {
-    if (microphone->process > 0) {
-        pid_t process = microphone->process;
-        kill(process, SIGINT);
-        for (int attempt = 0; attempt < 10; ++attempt) {
-            pid_t result = waitpid(process, NULL, WNOHANG);
-            if (result == process || (result < 0 && errno == ECHILD)) {
-                process = 0;
-                break;
-            }
-            if (result < 0 && errno != EINTR) break;
-            struct timespec delay = {.tv_nsec = 100000000};
-            nanosleep(&delay, NULL);
-        }
-        if (process > 0) {
-            kill(process, SIGKILL);
-            while (waitpid(process, NULL, 0) < 0 && errno == EINTR) {}
-        }
-    }
+    io_stop_process(microphone->process);
     if (microphone->fd >= 0) close(microphone->fd);
     microphone->fd = -1;
     microphone->process = 0;

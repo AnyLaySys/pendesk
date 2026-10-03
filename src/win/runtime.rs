@@ -3,6 +3,7 @@ use crate::cfg;
 use crate::elevation;
 use crate::server;
 use crate::startup;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{
@@ -38,8 +39,15 @@ pub fn run(config: Option<Config>, wait: bool) -> Result<(), String> {
         return Ok(());
     };
     let stop = Stop::new()?;
+    let camera = crate::cam::Camera::new()
+        .map_err(|error| eprintln!("Camera: {error}"))
+        .ok();
     while !stop.signaled() {
-        let _ = server::run(config.clone(), || stop.signaled());
+        let _ = server::run(
+            config.clone(),
+            || stop.signaled(),
+            camera.as_ref().map(|camera| Arc::clone(&camera.frames)),
+        );
         if stop.wait(5_000) {
             break;
         }

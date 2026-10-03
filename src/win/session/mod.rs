@@ -1,21 +1,18 @@
-use crate::all::cam::Receiver as CameraReceiver;
 use crate::all::cmd::Config;
-use crate::all::media as transport;
 use crate::all::protocol;
 use crate::encoder::H264;
 use crate::gpu::Gpu;
-use crate::media::{self, MicSocket};
+use crate::media;
 use crate::screen::Screen;
 use crate::signal::Signal;
+use crate::transport;
 use crate::viewport::Viewport;
 use std::net::{Shutdown, TcpStream, UdpSocket};
-use std::os::windows::io::AsRawSocket;
 use std::sync::{
     Arc, Condvar, Mutex,
     atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
-use windows::Win32::Networking::WinSock::SOCKET;
 
 mod audio;
 mod input;
@@ -25,6 +22,7 @@ pub fn run(
     config: &Config,
     video_socket: &UdpSocket,
     magic: [u8; 4],
+    frames: Option<Arc<crate::cam::Shared>>,
 ) -> Result<(), String> {
     stream
         .set_nonblocking(false)
@@ -52,7 +50,6 @@ pub fn run(
         canvas
     };
     let peer = transport::wait_video_peer(video_socket, &config.token, session.nonce)?;
-    let mic_socket = MicSocket::new(SOCKET(video_socket.as_raw_socket() as usize))?;
     let active = Arc::new(AtomicBool::new(true));
     let video_active = Arc::new(AtomicBool::new(false));
     let camera_active = Arc::new(AtomicBool::new(false));
@@ -65,6 +62,21 @@ pub fn run(
         stream.try_clone().map_err(|error| error.to_string())?,
         peer,
     )?;
+    let media_thread = match media::spawn(
+        Arc::clone(&active),
+        Arc::clone(&camera_active),
+        video_socket,
+        peer,
+        frames,
+    ) {
+        Ok(thread) => thread,
+        Err(error) => {
+            active.store(false, Ordering::Relaxed);
+            audio_gate.1.notify_one();
+            let _ = audio_thread.join();
+            return Err(error);
+        }
+    };
     let input_thread = input::spawn(
         Arc::clone(&active),
         Arc::clone(&video_active),
@@ -81,41 +93,18 @@ pub fn run(
     let started = Instant::now();
     let mut last_idr = started - keyframe;
     let mut next_frame = started;
-    let mut playback = None;
-    let mut camera_receiver = CameraReceiver::default();
-    let mut camera_window = None;
     let result = (|| {
-        let receive = |timeout, playback: &mut _, receiver: &mut _, window: &mut _| {
-            media::wait_socket(&signal, &mic_socket, timeout);
-            media::receive_packets(
-                video_socket,
-                peer,
-                playback,
-                camera_active.load(Ordering::Relaxed),
-                receiver,
-                window,
-            );
-        };
         while active.load(Ordering::Relaxed) {
-            if !camera_active.load(Ordering::Relaxed) {
-                camera_receiver.reset();
-                camera_window = None;
-            }
             if !video_active.load(Ordering::Relaxed) {
                 next_frame = Instant::now();
-                receive(20, &mut playback, &mut camera_receiver, &mut camera_window);
+                signal.wait(20);
                 continue;
             }
             let milliseconds = next_frame
                 .saturating_duration_since(Instant::now())
                 .as_micros()
                 .div_ceil(1000) as u32;
-            receive(
-                milliseconds,
-                &mut playback,
-                &mut camera_receiver,
-                &mut camera_window,
-            );
+            signal.wait(milliseconds);
             if !active.load(Ordering::Relaxed)
                 || !video_active.load(Ordering::Relaxed)
                 || Instant::now() < next_frame
@@ -147,7 +136,7 @@ pub fn run(
             let captured = match screen.capture(area)? {
                 Some(captured) => captured,
                 None => {
-                    receive(20, &mut playback, &mut camera_receiver, &mut camera_window);
+                    signal.wait(20);
                     continue;
                 }
             };
@@ -171,8 +160,8 @@ pub fn run(
     })();
     active.store(false, Ordering::Relaxed);
     audio_gate.1.notify_one();
-    drop(playback);
     let _ = stream.shutdown(Shutdown::Both);
+    let _ = media_thread.join();
     let _ = input_thread.join();
     let _ = audio_thread.join();
     result

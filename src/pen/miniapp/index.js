@@ -142,20 +142,22 @@ const script = {
          this.audioOn = !this.audioOn
          control([0x27, this.audioOn ? 1 : 0])
       },
-      toggleMic() {
-         if (this.cameraOn) return
-         this.micOn = !this.micOn
+      setMic(enabled) {
+         this.micOn = enabled
          if (this.micOn && this.audioOn) {
             this.audioOn = false
             control([0x27, 0])
          }
          control([0x28, this.micOn ? 1 : 0], true)
+      },
+      toggleMic() {
+         if (this.cameraOn) return
+         this.setMic(!this.micOn)
          state(true, true, true, this.micOn)
       },
       toggleCamera() {
          this.cameraOn = !this.cameraOn
-         this.micOn = this.cameraOn
-         control([0x28, this.micOn ? 1 : 0], true)
+         this.setMic(this.cameraOn)
          control([0x29, this.cameraOn ? 1 : 0], true)
          state(true, true, true, this.micOn)
       },

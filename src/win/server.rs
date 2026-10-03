@@ -11,7 +11,9 @@ use std::process::Command;
 use std::sync::Arc;
 use windows::Win32::Networking::WinSock::{SO_RCVBUF, SO_SNDBUF, SOCKET, SOL_SOCKET, setsockopt};
 
-struct Windows;
+struct Windows {
+    frames: Option<Arc<crate::cam::Shared>>,
+}
 
 impl Backend for Windows {
     fn tune_video(&self, socket: &UdpSocket) {
@@ -31,7 +33,7 @@ impl Backend for Windows {
         video: &UdpSocket,
         magic: [u8; 4],
     ) -> Result<(), String> {
-        session::run(stream, config, video, magic)
+        session::run(stream, config, video, magic, self.frames.clone())
     }
 
     fn files(&self, stream: TcpStream, token: [u8; 32], magic: [u8; 4]) -> io::Result<()> {
@@ -39,8 +41,12 @@ impl Backend for Windows {
     }
 }
 
-pub fn run(config: Config, stopped: impl Fn() -> bool) -> Result<(), String> {
-    all_server::run(config, tailscale()?, stopped, Arc::new(Windows))
+pub fn run(
+    config: Config,
+    stopped: impl Fn() -> bool,
+    frames: Option<Arc<crate::cam::Shared>>,
+) -> Result<(), String> {
+    all_server::run(config, tailscale()?, stopped, Arc::new(Windows { frames }))
 }
 
 fn tailscale() -> Result<IpAddr, String> {
