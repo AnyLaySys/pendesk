@@ -86,6 +86,8 @@ state=$(wslpath -a "$5")
 compiler=$(wslpath -a "$6")
 miniapp=$(wslpath -a "$7")
 stage=$(wslpath -a "$8")
+sudo dpkg --add-architecture arm64
+sudo apt install -y libc6-dev-arm64-cross libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
 if [ ! -f "$quickjs/quickjs.c" ]; then
     tar -xf "$archive" -C "$state"
 fi

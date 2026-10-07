@@ -60,7 +60,7 @@ const parseDevices = (value) =>
 
 const script = {
    data() {
-      const data = { active: true, job: null, held: [], fileTouch: null, fileScrolled: false, fileTransferPolling: false, fileTransferStarted: false, fileTransferSide: "", fileTransferTimer: null, devices: [], audioOn: false, screenOn: false, mouseOn: false, touchOn: false, micOn: false, cameraOn: false, view: "devices", fileState: { pen: [], windows: [] }, fileOffset: { pen: 0, windows: 0 }, fileRead: 0, caps: false, modifiers: { Shift: false, Ctrl: false, Win: false, Alt: false } }
+      const data = { active: true, job: null, videoVersion: 0, held: [], fileTouch: null, fileScrolled: false, fileTransferPolling: false, fileTransferStarted: false, fileTransferSide: "", fileTransferTimer: null, devices: [], audioOn: false, screenOn: false, mouseOn: false, touchOn: false, micOn: false, cameraOn: false, view: "devices", fileState: { pen: [], windows: [] }, fileOffset: { pen: 0, windows: 0 }, fileRead: 0, caps: false, modifiers: { Shift: false, Ctrl: false, Win: false, Alt: false } }
       fs.readFile("/userdisk/PenDesk/CtrlDev", "utf8")
          .then((value) => {
             data.devices = parseDevices(value)
@@ -85,7 +85,7 @@ const script = {
       }
       launch()
       state(this.view !== "desktop", !this.screenOn || this.view === "tools", !this.mouseOn, this.micOn, this.touchOn, this.view === "keyboard")
-      this.startVideo()
+      this.restartVideo()
    },
    deactivated() {
       this.active = false
@@ -107,18 +107,23 @@ const script = {
             if (video) video.play(0)
          }, 100)
       },
+      restartVideo() {
+         if (!this.active || !this.screenOn || (this.view !== "desktop" && this.view !== "keyboard")) return
+         ++this.videoVersion
+         this.startVideo()
+      },
       stopVideo() {
          if (this.job !== null) clearTimeout(this.job)
          this.job = null
          const video = this.$refs.remote
          if (video) video.stop()
       },
-      videoError() {
-         if (!this.active || !this.screenOn || (this.view !== "desktop" && this.view !== "keyboard")) return
+      videoError(version) {
+         if (version !== this.videoVersion || !this.active || !this.screenOn || (this.view !== "desktop" && this.view !== "keyboard")) return
          this.stopVideo()
          this.job = setTimeout(() => {
             this.job = null
-            this.startVideo()
+            this.restartVideo()
          }, 500)
       },
       exitDevice(refresh) {
@@ -439,7 +444,10 @@ const style = {
 const render = function () {
    const create = this.$createElement
    const text = (value, classes, style) => create("text", { staticClass: ["font"].concat(classes), style, attrs: { value } })
-   const remoteFrame = (classes) => (this.screenOn ? create("video", { staticClass: classes, ref: "remote", attrs: { src: "http://127.0.0.1:999/native", enable_audio: false, playbin3: true }, on: { error: () => this.videoError(), completed: () => this.videoError() } }) : create("div", { staticClass: classes }))
+   const remoteFrame = (classes) => {
+      const version = this.videoVersion
+      return this.screenOn ? create("video", { key: "remote-" + version, staticClass: classes, ref: "remote", attrs: { src: "http://127.0.0.1:999/native", enable_audio: false, playbin3: true }, on: { error: () => this.videoError(version), completed: () => this.videoError(version) } }) : create("div", { staticClass: classes })
+   }
    const touchSurface = () => (this.touchOn ? create("div", { staticClass: ["touchSurface"] }) : null)
    const icon = (value, classes) => create("div", { staticClass: classes, style: { backgroundImage: "url(" + value + ")", backgroundSize: "contain", backgroundRepeat: "no-repeat", backgroundPosition: "center" } })
    const keyButton = (entry) => {
