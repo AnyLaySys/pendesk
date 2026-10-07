@@ -12,7 +12,6 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <sys/un.h>
-#include <stdio.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -77,18 +76,10 @@ static GWeakRef pipeline;
 static GWeakRef sink;
 static GWeakRef flip;
 static struct pan_shared *pan;
-static gint64 sampled_at;
-static guint64 sampled_frames;
-static double sampled_fps;
 static GMutex view_mutex;
 static double view_x, view_y;
 static guint view_width, view_height;
 static gint64 view_updated, next_expose, last_video;
-static GMutex stamp_mutex;
-static struct { GstClockTime pts; GstMemory *memory; gint64 time; } stamps[16];
-static guint stamp_index;
-static guint64 checked_frames, shared_frames;
-static gint64 decoder_to_sink_max;
 
 static struct pan_shared *shared_view(void) {
     g_mutex_lock(&view_mutex);
@@ -96,50 +87,6 @@ static struct pan_shared *shared_view(void) {
     struct pan_shared *shared = pan;
     g_mutex_unlock(&view_mutex);
     return shared;
-}
-
-static void sample(void) {
-    gint64 now = g_get_monotonic_time();
-    g_mutex_lock(&stamp_mutex);
-    gboolean due = now - sampled_at >= G_USEC_PER_SEC;
-    g_mutex_unlock(&stamp_mutex);
-    if (!due) return;
-    GstElement *element = g_weak_ref_get(&sink);
-    if (!element) return;
-    GstStructure *stats = NULL;
-    g_object_get(element, "stats", &stats, NULL);
-    guint64 rendered = 0, dropped = 0;
-    if (stats) {
-        gst_structure_get_uint64(stats, "rendered", &rendered);
-        gst_structure_get_uint64(stats, "dropped", &dropped);
-        gst_structure_free(stats);
-    }
-    g_mutex_lock(&stamp_mutex);
-    if (sampled_at && now > sampled_at && rendered >= sampled_frames)
-        sampled_fps = (double)(rendered - sampled_frames) * G_USEC_PER_SEC / (now - sampled_at);
-    sampled_at = now;
-    sampled_frames = rendered;
-    double fps = sampled_fps;
-    guint64 shared = shared_frames, checked = checked_frames;
-    gint64 elapsed = decoder_to_sink_max;
-    decoder_to_sink_max = 0;
-    g_mutex_unlock(&stamp_mutex);
-    FILE *file = fopen("/tmp/pendesk-video.stats", "w");
-    if (file) {
-        fprintf(file, "fps=%.2f\nrendered=%llu\ndropped=%llu\n", fps,
-                (unsigned long long)rendered, (unsigned long long)dropped);
-        struct pan_shared *view = shared_view();
-        if (view) {
-            uint64_t region = atomic_load(&view->region);
-            uint32_t origin = atomic_load(&view->rendered);
-            fprintf(file, "canvas=%ux%u\nviewport=%u,%u\n", (unsigned int)(region >> 48),
-                    (unsigned int)((region >> 32) & 65535), origin >> 16, origin & 65535);
-        }
-        fprintf(file, "shared_buffers=%llu/%llu\ndecoder_to_sink_max_us=%lld\n",
-                (unsigned long long)shared, (unsigned long long)checked, (long long)elapsed);
-        fclose(file);
-    }
-    gst_object_unref(element);
 }
 
 static gboolean update_display(GstElement *element, gboolean cached, GstBuffer *buffer) {
@@ -366,7 +313,6 @@ static gboolean feed(gpointer data) {
     }
     GstElement *display = g_weak_ref_get(&sink);
     if (display) { repaint(display); gst_object_unref(display); }
-    sample();
     done:
     gst_object_unref(element);
     return G_SOURCE_CONTINUE;
@@ -376,41 +322,10 @@ static gboolean feed(gpointer data) {
     return G_SOURCE_REMOVE;
 }
 
-static GstMemory *memory(GstBuffer *buffer) {
-    if (!gst_buffer_n_memory(buffer)) return NULL;
-    GstMemory *memory = gst_buffer_peek_memory(buffer, 0);
-    while (memory->parent) memory = memory->parent;
-    return memory;
-}
-
-static GstPadProbeReturn decoded(GstPad *pad, GstPadProbeInfo *info, gpointer data) {
-    (void)pad;
-    (void)data;
-    GstBuffer *buffer = GST_PAD_PROBE_INFO_BUFFER(info);
-    g_mutex_lock(&stamp_mutex);
-    guint index = stamp_index++ % 16;
-    stamps[index].pts = GST_BUFFER_PTS(buffer);
-    stamps[index].memory = memory(buffer);
-    stamps[index].time = g_get_monotonic_time();
-    g_mutex_unlock(&stamp_mutex);
-    return GST_PAD_PROBE_OK;
-}
-
 static GstPadProbeReturn fill_display(GstPad *pad, GstPadProbeInfo *info, gpointer data) {
     (void)pad;
     GstElement *element = data;
     GstBuffer *buffer = GST_PAD_PROBE_INFO_BUFFER(info);
-    g_mutex_lock(&stamp_mutex);
-    for (guint i = 0; i < 16; ++i) {
-        if (stamps[i].memory && stamps[i].pts == GST_BUFFER_PTS(buffer)) {
-            ++checked_frames;
-            if (stamps[i].memory == memory(buffer)) ++shared_frames;
-            gint64 elapsed = g_get_monotonic_time() - stamps[i].time;
-            if (elapsed > decoder_to_sink_max) decoder_to_sink_max = elapsed;
-            break;
-        }
-    }
-    g_mutex_unlock(&stamp_mutex);
     gboolean cached = gst_mini_object_get_qdata(GST_MINI_OBJECT(buffer), g_quark_from_static_string("pendesk-cached")) != NULL;
     buffer = gst_buffer_make_writable(buffer);
     GST_PAD_PROBE_INFO_DATA(info) = buffer;
@@ -453,22 +368,8 @@ static void tune(GstElement *element) {
             g_object_set_data(G_OBJECT(element), "pendesk-display", GINT_TO_POINTER(1));
         }
         g_weak_ref_set(&sink, element);
-        g_mutex_lock(&stamp_mutex);
-        sampled_at = 0;
-        sampled_frames = 0;
-        sampled_fps = 0;
-        memset(stamps, 0, sizeof(stamps));
-        checked_frames = shared_frames = 0;
-        decoder_to_sink_max = 0;
-        g_mutex_unlock(&stamp_mutex);
     } else if (!strcmp(name, "mppvideodec")) {
         g_object_set(element, "dma-feature", TRUE, "fast-mode", TRUE, NULL);
-        if (!g_object_get_data(G_OBJECT(element), "pendesk-decoder")) {
-            GstPad *pad = gst_element_get_static_pad(element, "src");
-            gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER, decoded, NULL, NULL);
-            gst_object_unref(pad);
-            g_object_set_data(G_OBJECT(element), "pendesk-decoder", GINT_TO_POINTER(1));
-        }
     } else if (!strcmp(name, "videoflip")) {
         g_weak_ref_set(&flip, element);
         if (!g_object_get_data(G_OBJECT(element), "pendesk-orientation")) {

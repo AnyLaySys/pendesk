@@ -133,7 +133,6 @@ int cam_start(struct camera *camera) {
         close(descriptors[0]);
         close(descriptors[1]);
         unlink(camera->path);
-        camera->path[0] = '\0';
         return -1;
     }
     if (!process) {
@@ -170,10 +169,9 @@ void cam_stop(struct camera *camera) {
 }
 
 int cam_running(struct camera *camera) {
-    int status;
     pid_t result;
     if (camera->process <= 0) return 0;
-    do result = waitpid(camera->process, &status, WNOHANG); while (result < 0 && errno == EINTR);
+    do result = waitpid(camera->process, NULL, WNOHANG); while (result < 0 && errno == EINTR);
     if (result == 0) return 1;
     release(camera);
     return 0;

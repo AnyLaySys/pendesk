@@ -46,7 +46,7 @@ int main(int argc, char **argv) {
         GstBuffer *buffer = gst_sample_get_buffer(sample);
         GstMapInfo map;
         if (gst_buffer_map(buffer, &map, GST_MAP_READ)) {
-            struct stream_packet packet = {.length = (uint32_t)map.size, .keyframe = 1,
+            struct stream_packet packet = {.length = (uint32_t)map.size,
                 .timestamp = GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(buffer)) ? GST_BUFFER_PTS(buffer) / GST_MSECOND : 0};
             failed = io_write_all(STDOUT_FILENO, &packet, sizeof(packet)) != 0 ||
                      io_write_all(STDOUT_FILENO, map.data, map.size) != 0;

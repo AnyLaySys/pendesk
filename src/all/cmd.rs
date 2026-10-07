@@ -28,20 +28,25 @@ pub fn parse() -> Result<Command, String> {
             wait: false,
         });
     };
+    let (option, serial) = if option == "-s" || option == "--serial" {
+        let serial = next(&mut arguments, &option)?;
+        (next(&mut arguments, "command")?, Some(serial))
+    } else {
+        (option, None)
+    };
     match option.as_str() {
-        "run" if arguments.next().is_none() => Ok(Command::Run {
+        "run" if serial.is_none() && arguments.next().is_none() => Ok(Command::Run {
             config: None,
             wait: true,
         }),
-        "install" => parse_setup(arguments).map(|setup| Command::Install {
-            serial: setup.serial,
-        }),
-        "configure" => parse_setup(arguments).map(Command::Configure),
-        "restart" if arguments.next().is_none() => Ok(Command::Restart),
-        "stop" if arguments.next().is_none() => Ok(Command::Stop),
-        "+startup" if arguments.next().is_none() => Ok(Command::Startup(true)),
-        "-startup" if arguments.next().is_none() => Ok(Command::Startup(false)),
-        "--help" | "-h" if arguments.next().is_none() => Ok(Command::Help),
+        "install" if arguments.next().is_none() => Ok(Command::Install { serial }),
+        "configure" => parse_setup(arguments, serial).map(Command::Configure),
+        "restart" if serial.is_none() && arguments.next().is_none() => Ok(Command::Restart),
+        "stop" if serial.is_none() && arguments.next().is_none() => Ok(Command::Stop),
+        "+startup" if serial.is_none() && arguments.next().is_none() => Ok(Command::Startup(true)),
+        "-startup" if serial.is_none() && arguments.next().is_none() => Ok(Command::Startup(false)),
+        "--help" | "-h" if serial.is_none() && arguments.next().is_none() => Ok(Command::Help),
+        _ if serial.is_some() => Err(usage()),
         _ => parse_config(std::iter::once(option).chain(arguments)).map(|config| Command::Run {
             config: Some(config),
             wait: false,
@@ -89,12 +94,12 @@ fn parse_config(mut arguments: impl Iterator<Item = String>) -> Result<Config, S
         token: pairing_token.ok_or_else(|| "--token is required".to_string())?,
     })
 }
-fn parse_setup(mut arguments: impl Iterator<Item = String>) -> Result<Setup, String> {
+fn parse_setup(mut arguments: impl Iterator<Item = String>, serial: Option<String>) -> Result<Setup, String> {
     let mut setup = Setup {
         authkey: None,
         host: None,
         port: 999,
-        serial: None,
+        serial,
         token: None,
     };
     while let Some(option) = arguments.next() {
@@ -103,7 +108,6 @@ fn parse_setup(mut arguments: impl Iterator<Item = String>) -> Result<Setup, Str
             "--auth-key" | "--authkey" => setup.authkey = Some(value()?),
             "--host" | "--hostaddress" => setup.host = Some(value()?),
             "--port" => setup.port = number(&value()?, "--port")?,
-            "--serial" | "-s" => setup.serial = Some(value()?),
             "--token" => setup.token = Some(value()?),
             "--help" | "-h" => return Err(usage()),
             _ => return Err(usage()),
@@ -156,5 +160,5 @@ fn nibble(value: u8) -> Option<u8> {
     }
 }
 pub fn usage() -> String {
-    "Usage: pendesk [--token <64-hex> [--port <1-65535>]]\n       pendesk install [-s|--serial <device>]\n       pendesk configure [--host <Tailnet IPv4>] [-s|--serial <device>] [--token <64-hex>] [--auth-key <key>]\n       pendesk restart|stop|+startup|-startup".into()
+    "Usage: pendesk [--token <64-hex> [--port <1-65535>]]\n       pendesk [-s|--serial <device>] install\n       pendesk [-s|--serial <device>] configure [--host <Tailnet IPv4>] [--token <64-hex>] [--auth-key <key>]\n       pendesk restart|stop|+startup|-startup".into()
 }

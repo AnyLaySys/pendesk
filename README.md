@@ -57,25 +57,25 @@ adb devices
 如同时连接多个设备，所有 PenDesk 命令都应指定词典笔序列号：
 
 ```powershell
-.\build\out\pendesk.exe install --serial <词典笔序列号>
+.\build\out\pendesk.exe -s <词典笔序列号> install
 ```
 
 安装后，配置电脑端所在 Tailnet。省略 `--host` 时会使用当前 Windows Tailscale 的 IPv4：
 
 ```powershell
-.\build\out\pendesk.exe configure --serial <词典笔序列号>
+.\build\out\pendesk.exe -s <词典笔序列号> configure
 ```
 
 如需指定另一台已运行 PenDesk 的电脑：
 
 ```powershell
-.\build\out\pendesk.exe configure --host <Tailnet IPv4> --serial <词典笔序列号>
+.\build\out\pendesk.exe -s <词典笔序列号> configure --host <Tailnet IPv4>
 ```
 
 若词典笔尚未登录 Tailscale，可附加预授权密钥：
 
 ```powershell
-.\build\out\pendesk.exe configure --auth-key <Tailscale-auth-key> --serial <词典笔序列号>
+.\build\out\pendesk.exe -s <词典笔序列号> configure --auth-key <Tailscale-auth-key>
 ```
 
 配置本机后，电脑端会自动启动。也可以手动控制：
@@ -88,7 +88,6 @@ adb devices
 
 ## 常见问题
 
-- `无ADB设备`：检查 `adb devices`，并用 `--serial` 指定词典笔，避免误选普通 Android 手机。
+- `无ADB设备`：检查 `adb devices`，并用前置 `-s <词典笔序列号>` 指定词典笔，避免误选普通 Android 手机。
 - `Tailscale未安装` 或 `Tailscale未登录`：在 Windows 安装并登录 Tailscale 后重新执行 `configure`。
 - Windows 相机找不到 PenDesk：确认 Windows 11 版本符合要求、`pendesk_camera.dll` 与 `pendesk.exe` 同目录，并保持 `pendesk.exe run` 运行。
-- 词典笔熄屏再亮屏后没有画面：请安装包含最新 `pendesk.amr` 的版本；播放器会在恢复时自动重建。
